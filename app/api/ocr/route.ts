@@ -60,10 +60,16 @@ export async function POST(request: NextRequest) {
         const result = await extractLedgerData(photo.base64, photo.mimeType);
         return { result, pageNumber: photo.pageNumber };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Unknown OCR error';
-        console.error(`OCR failed for page ${photo.pageNumber}:`, msg);
-        errors.push(`Page ${photo.pageNumber}: ${msg}`);
-        return null;
+        console.warn(`OCR attempt 1 failed for page ${photo.pageNumber} (${err instanceof Error ? err.message : ''}), retrying...`);
+        try {
+          const retryResult = await extractLedgerData(photo.base64, photo.mimeType);
+          return { result: retryResult, pageNumber: photo.pageNumber };
+        } catch (retryErr) {
+          const msg = retryErr instanceof Error ? retryErr.message : 'Unknown OCR error';
+          console.error(`OCR failed for page ${photo.pageNumber}:`, msg);
+          errors.push(`Page ${photo.pageNumber}: ${msg}`);
+          return null;
+        }
       }
     });
 
@@ -80,10 +86,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Merge results: header from first photo only, all rows concatenated
-    const firstResult = ocrResults[0].result;
-    const header = firstResult.header;
-    const allRows = ocrResults.flatMap((r) => r.result.rows);
+    // Sort OCR results strictly by page number
+    ocrResults.sort((a, b) => a.pageNumber - b.pageNumber);
+
+    // Merge results: header from first photo with non-empty header, all rows concatenated in page order
+    const headerResult =
+      ocrResults.find(
+        (r) => r.result.header && (r.result.header.date || r.result.header.section || r.result.header.class)
+      ) || ocrResults[0];
+    const header = headerResult.result.header || {};
+
+    // Concatenate all rows from all pages in order, ensuring continuous SL.NO sequencing
+    const rawRows = ocrResults.flatMap((r) => r.result.rows || []);
+    let currentSl = 0;
+    const allRows = rawRows.map((row) => {
+      let sl = row.sl_no;
+      if (!sl || sl <= currentSl) {
+        currentSl += 1;
+        sl = currentSl;
+      } else {
+        currentSl = sl;
+      }
+      return {
+        ...row,
+        sl_no: sl,
+      };
+    });
 
     const supabase = createServerClient();
 

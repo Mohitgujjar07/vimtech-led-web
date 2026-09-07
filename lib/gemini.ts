@@ -1,40 +1,20 @@
 import { OcrResult } from './types';
 
-const OCR_PROMPT = `You are reading a photo of a handwritten "Computer Lab Ledger" sheet from an
-Indian college. The sheet has a header with Date, Section, Class, and Faculty
-Name, followed by a table with columns: SL.NO, NAME, UUCMS NO. (or UCMS NO.), SYSTEM NO.,
-SIGN, REMARKS. Some rows may be blank (unused) — skip those. The REMARKS
-column may be empty for most students — that's normal, leave it null.
+const OCR_PROMPT = `You are an expert OCR system for handwritten Indian college Computer Lab Ledgers.
+Extract header (date, section, class, faculty_name, total_system_count, total_mouse_count, total_keyboard_count) and student rows.
+For each row extract:
+- sl_no (number as printed/written)
+- name (student name)
+- ucms_no (UUCMS / roll number)
+- system_no (computer/system number)
+- signature_present (true if signature or tick mark is present, false otherwise)
+- remarks (string or null)
 
-Extract and return ONLY valid JSON, no other text, in this exact shape:
+Skip completely blank unused rows. Only include rows with a student name.
+Preserve exact serial numbers (SL.NO).
 
-{
-  "header": {
-    "date": "string or null",
-    "section": "string or null",
-    "class": "string or null",
-    "faculty_name": "string or null",
-    "total_system_count": "number or null",
-    "total_mouse_count": "number or null",
-    "total_keyboard_count": "number or null"
-  },
-  "rows": [
-    {
-      "sl_no": number,
-      "name": "string as best read",
-      "ucms_no": "string as best read (UUCMS number)",
-      "system_no": "string as best read",
-      "signature_present": true or false,
-      "remarks": "string or null"
-    }
-  ]
-}
-
-Rules:
-- Only include rows that have at least a name written in them.
-- If a field is illegible, transcribe your closest reading.
-- Do not invent rows that aren't on the page.
-- Preserve the exact SL.NO printed in that row.`;
+Output strict, compact JSON in this structure:
+{"header":{"date":null,"section":null,"class":null,"faculty_name":null,"total_system_count":null,"total_mouse_count":null,"total_keyboard_count":null},"rows":[{"sl_no":1,"name":"","ucms_no":"","system_no":"","signature_present":true,"remarks":null}]}`;
 
 const FALLBACK_MODELS = [
   'gemini-2.5-flash',
@@ -56,7 +36,7 @@ export async function extractLedgerData(
   for (const modelName of FALLBACK_MODELS) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 25000);
+      const timeoutId = setTimeout(() => controller.abort(), 48000);
 
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`,
@@ -82,6 +62,7 @@ export async function extractLedgerData(
             ],
             generationConfig: {
               responseMimeType: 'application/json',
+              temperature: 0.1,
             },
           }),
           signal: controller.signal,
