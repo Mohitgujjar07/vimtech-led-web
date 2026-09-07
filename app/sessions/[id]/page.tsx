@@ -419,6 +419,7 @@ export default function SessionDetailPage() {
                 onClick={() => setPreviewPhotoUrl(photo.photo_url)}
                 className="group relative cursor-pointer overflow-hidden rounded-xl border border-gray-200 shadow-2xs hover:shadow-md transition-all"
               >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={photo.photo_url}
                   alt={`Page ${photo.page_number}`}
@@ -449,6 +450,7 @@ export default function SessionDetailPage() {
           >
             <X className="h-6 w-6" />
           </button>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={previewPhotoUrl}
             alt="Enlarged ledger page"

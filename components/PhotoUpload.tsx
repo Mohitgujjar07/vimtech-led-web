@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Camera, Upload, X, Plus, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Camera, Upload, X, Plus, CheckCircle2 } from 'lucide-react';
 
 interface PhotoFile {
   id: string;
@@ -54,7 +54,6 @@ export default function PhotoUpload({ onPhotosReady, maxPhotos = 5 }: PhotoUploa
 
   const removePhoto = useCallback(
     (id: string) => {
-      const toRemove = photos.find((p) => p.id !== id);
       const target = photos.find((p) => p.id === id);
       if (target) URL.revokeObjectURL(target.preview);
 
@@ -176,6 +175,7 @@ export default function PhotoUpload({ onPhotosReady, maxPhotos = 5 }: PhotoUploa
                 key={photo.id}
                 className="group relative overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xs"
               >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={photo.preview}
                   alt={`Page ${photo.pageNumber}`}
