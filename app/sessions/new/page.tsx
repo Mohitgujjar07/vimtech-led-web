@@ -16,6 +16,13 @@ import {
 import { toast } from 'sonner';
 import { createBrowserClient } from '@/lib/supabase';
 import PhotoUpload from '@/components/PhotoUpload';
+import {
+  DEGREE_TYPES,
+  getSemesterOptions,
+  getSectionsForSemester,
+  getFacultyForDegree,
+  buildClassName,
+} from '@/lib/constants';
 
 interface ManualEntry {
   sl_no: number;
@@ -25,8 +32,6 @@ interface ManualEntry {
   signature_present: boolean;
   remarks: string;
 }
-
-const QUICK_SECTIONS = ['A', 'B', 'C', 'BCA-1', 'BCA-3', 'BCA-5'];
 
 export default function NewSessionPage() {
   const router = useRouter();
@@ -38,9 +43,33 @@ export default function NewSessionPage() {
   const [sessionDate, setSessionDate] = useState(
     new Date().toISOString().split('T')[0]
   );
+  const [degree, setDegree] = useState('');
+  const [semester, setSemester] = useState('');
   const [section, setSection] = useState('');
-  const [className, setClassName] = useState('');
   const [facultyName, setFacultyName] = useState('');
+  const [freeTextTopic, setFreeTextTopic] = useState(''); // For TRAINING/WORKSHOP
+
+  // Derived values
+  const semesterOptions = degree ? getSemesterOptions(degree) : [];
+  const sectionOptions = degree && semester ? getSectionsForSemester(degree, semester) : [];
+  const facultyOptions = degree ? getFacultyForDegree(degree) : [];
+  const hasSemesters = degree === 'BCA' || degree === 'PUC';
+  const hasSections = degree === 'BCA' && semester !== '';
+  const isFreeForm = degree === 'TRAINING' || degree === 'WORKSHOP';
+
+  // Cascade reset handlers
+  const handleDegreeChange = (val: string) => {
+    setDegree(val);
+    setSemester('');
+    setSection('');
+    setFacultyName('');
+    setFreeTextTopic('');
+  };
+
+  const handleSemesterChange = (val: string) => {
+    setSemester(val);
+    setSection('');
+  };
 
   // Manual entries
   const [entries, setEntries] = useState<ManualEntry[]>([
@@ -97,12 +126,15 @@ export default function NewSessionPage() {
       const supabase = createBrowserClient();
 
       // Create session
+      const computedClassName = buildClassName(degree, semester);
+      const computedSection = isFreeForm ? freeTextTopic : section;
+
       const { data: session, error: sessionError } = await supabase
         .from('lab_sessions')
         .insert({
           session_date: sessionDate,
-          section: section || null,
-          class_name: className || null,
+          section: computedSection || null,
+          class_name: computedClassName || null,
           faculty_name: facultyName || null,
           total_system_count: validEntries.length,
         })
@@ -244,8 +276,8 @@ export default function NewSessionPage() {
         body: JSON.stringify({
           photos: photoData,
           sessionDate,
-          section: section || null,
-          className: className || null,
+          section: (isFreeForm ? freeTextTopic : section) || null,
+          className: buildClassName(degree, semester) || null,
           facultyName: facultyName || null,
         }),
       });
@@ -323,6 +355,7 @@ export default function NewSessionPage() {
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
+          {/* Date */}
           <div>
             <label className="text-xs font-semibold text-gray-600 mb-1 block">Date *</label>
             <input
@@ -334,56 +367,100 @@ export default function NewSessionPage() {
             />
           </div>
 
+          {/* Class / Degree */}
           <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-semibold text-gray-600">Section</label>
-              {/* Quick Section Pills */}
-              <div className="flex gap-1">
-                {QUICK_SECTIONS.slice(0, 3).map((sec) => (
-                  <button
-                    key={sec}
-                    type="button"
-                    onClick={() => setSection(sec)}
-                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold transition-all ${
-                      section === sec
-                        ? 'bg-brand-700 text-white'
-                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                    }`}
-                  >
-                    {sec}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <input
-              type="text"
-              value={section}
-              onChange={(e) => setSection(e.target.value)}
-              placeholder="e.g. A, B, or 5th Novas"
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Class / Degree *</label>
+            <select
+              value={degree}
+              onChange={(e) => handleDegreeChange(e.target.value)}
               className="input py-2 text-sm font-medium"
-            />
+            >
+              <option value="">— Select Program —</option>
+              {DEGREE_TYPES.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
           </div>
 
-          <div>
-            <label className="text-xs font-semibold text-gray-600 mb-1 block">Class / Degree</label>
-            <input
-              type="text"
-              value={className}
-              onChange={(e) => setClassName(e.target.value)}
-              placeholder="e.g. BCA 3rd Sem"
-              className="input py-2 text-sm"
-            />
-          </div>
+          {/* Semester / Year (only for BCA and PUC) */}
+          {hasSemesters && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">
+                {degree === 'BCA' ? 'Semester' : 'Year'}
+              </label>
+              <select
+                value={semester}
+                onChange={(e) => handleSemesterChange(e.target.value)}
+                className="input py-2 text-sm font-medium"
+              >
+                <option value="">— Select {degree === 'BCA' ? 'Semester' : 'Year'} —</option>
+                {semesterOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
+          {/* Section (only for BCA with a semester selected) */}
+          {hasSections && sectionOptions.length > 0 && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">Section</label>
+              <select
+                value={section}
+                onChange={(e) => setSection(e.target.value)}
+                className="input py-2 text-sm font-medium"
+              >
+                <option value="">— Select Section —</option>
+                {sectionOptions.map((sec) => (
+                  <option key={sec} value={sec}>
+                    {sec}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Free-text Topic (for TRAINING / WORKSHOP) */}
+          {isFreeForm && (
+            <div>
+              <label className="text-xs font-semibold text-gray-600 mb-1 block">
+                Batch / Topic
+              </label>
+              <input
+                type="text"
+                value={freeTextTopic}
+                onChange={(e) => setFreeTextTopic(e.target.value)}
+                placeholder={`e.g. ${degree === 'TRAINING' ? 'Python Batch 1' : 'AI/ML Workshop'}`}
+                className="input py-2 text-sm font-medium"
+              />
+            </div>
+          )}
+
+          {/* Faculty In-Charge */}
           <div>
             <label className="text-xs font-semibold text-gray-600 mb-1 block">Faculty In-Charge</label>
-            <input
-              type="text"
-              value={facultyName}
-              onChange={(e) => setFacultyName(e.target.value)}
-              placeholder="e.g. Dr. Sharma"
-              className="input py-2 text-sm"
-            />
+            {degree ? (
+              <select
+                value={facultyName}
+                onChange={(e) => setFacultyName(e.target.value)}
+                className="input py-2 text-sm font-medium"
+              >
+                <option value="">— Select Faculty —</option>
+                {facultyOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <select disabled className="input py-2 text-sm font-medium text-gray-400">
+                <option>Select a program first</option>
+              </select>
+            )}
           </div>
         </div>
       </div>

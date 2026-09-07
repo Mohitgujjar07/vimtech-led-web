@@ -17,6 +17,7 @@ import {
 import { toast } from 'sonner';
 import { createBrowserClient } from '@/lib/supabase';
 import { Student } from '@/lib/types';
+import { getAllSections } from '@/lib/constants';
 
 const RosterUpload = dynamic(() => import('@/components/RosterUpload'), {
   loading: () => (
@@ -764,13 +765,18 @@ export default function RosterPage() {
 
               <div>
                 <label className="label">Section (optional)</label>
-                <input
-                  type="text"
+                <select
                   value={newSection}
                   onChange={(e) => setNewSection(e.target.value)}
-                  placeholder="e.g. A, B, 5th Novas"
                   className="input"
-                />
+                >
+                  <option value="">— No Section —</option>
+                  {getAllSections().map((sec) => (
+                    <option key={sec} value={sec}>
+                      {sec}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-2">
