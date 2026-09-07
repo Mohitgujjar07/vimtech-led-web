@@ -1,20 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createSessionToken, timingSafeEqualStr } from '@/lib/auth';
 
 export async function POST(request: NextRequest) {
   try {
-    const { username, password } = await request.json();
+    const body = await request.json();
+    const username = typeof body?.username === 'string' ? body.username.trim() : '';
+    const password = typeof body?.password === 'string' ? body.password.trim() : '';
 
     const expectedUser = (process.env.LAB_ADMIN_USERNAME || 'admin').trim();
     const expectedPass = (process.env.LAB_ADMIN_PASSWORD || 'admin123').trim();
 
-    if (
-      username &&
-      password &&
-      username.trim().toLowerCase() === expectedUser.toLowerCase() &&
-      password.trim() === expectedPass
-    ) {
+    const isUserValid =
+      username.length > 0 &&
+      timingSafeEqualStr(username.toLowerCase(), expectedUser.toLowerCase());
+    const isPassValid =
+      password.length > 0 &&
+      timingSafeEqualStr(password, expectedPass);
+
+    if (isUserValid && isPassValid) {
+      const token = await createSessionToken(expectedUser);
       const response = NextResponse.json({ success: true, message: 'Logged in successfully' });
-      response.cookies.set('lab_auth_session', 'authenticated', {
+      response.cookies.set('lab_auth_session', token, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'lax',

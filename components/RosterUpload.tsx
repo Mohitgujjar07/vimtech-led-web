@@ -4,7 +4,6 @@ import { useState, useRef } from 'react';
 import { Upload, FileSpreadsheet, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { createBrowserClient } from '@/lib/supabase';
-import Papa from 'papaparse';
 
 interface RosterRow {
   name: string;
@@ -23,10 +22,11 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
   const [errors, setErrors] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const parseFile = (file: File) => {
+  const parseFile = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase();
 
     if (ext === 'csv' || ext === 'txt') {
+      const Papa = (await import('papaparse')).default;
       Papa.parse<Record<string, string>>(file, {
         header: true,
         skipEmptyLines: true,
@@ -39,17 +39,38 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
       });
     } else if (ext === 'xlsx' || ext === 'xls') {
       // Dynamic import xlsx for browser
-      import('xlsx').then((XLSX) => {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: 'array' });
-          const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-          const jsonData = XLSX.utils.sheet_to_json<Record<string, string>>(firstSheet);
-          processRows(jsonData);
-        };
-        reader.readAsArrayBuffer(file);
-      });
+      import('xlsx')
+        .then((XLSX) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            try {
+              const data = new Uint8Array(e.target?.result as ArrayBuffer);
+              const workbook = XLSX.read(data, { type: 'array' });
+              if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+                setErrors(['The uploaded Excel workbook contains no sheets.']);
+                return;
+              }
+              const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+              if (!firstSheet) {
+                setErrors(['The first sheet in the Excel workbook is empty.']);
+                return;
+              }
+              const jsonData = XLSX.utils.sheet_to_json<Record<string, string>>(firstSheet);
+              processRows(jsonData);
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : 'Failed to read Excel file';
+              setErrors([`Excel parse error: ${msg}`]);
+            }
+          };
+          reader.onerror = () => {
+            setErrors(['Failed to read file from disk']);
+          };
+          reader.readAsArrayBuffer(file);
+        })
+        .catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : 'Failed to load Excel parser';
+          setErrors([msg]);
+        });
     } else {
       setErrors(['Please upload a CSV or Excel (.xlsx) file']);
     }
@@ -114,7 +135,7 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
         { onConflict: 'ucms_no' }
       );
 
-      if (error) throw error;
+      if (error) throw new Error(`Database error: ${error.message}`);
 
       toast.success(`Successfully uploaded ${rows.length} students`);
       setRows([]);

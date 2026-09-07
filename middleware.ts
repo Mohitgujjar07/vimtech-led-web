@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createMiddlewareClient } from '@/lib/supabase-middleware';
+import { verifySessionToken } from '@/lib/auth';
 
 // Routes that don't require authentication
 const publicRoutes = ['/login', '/api/auth', '/api/backup', '/downloads'];
@@ -25,8 +25,12 @@ export async function middleware(request: NextRequest) {
   }
 
   const sessionCookie = request.cookies.get('lab_auth_session')?.value;
+  const session = sessionCookie ? await verifySessionToken(sessionCookie) : null;
 
-  if (sessionCookie !== 'authenticated') {
+  if (!session) {
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('redirect', pathname);
     return NextResponse.redirect(loginUrl);

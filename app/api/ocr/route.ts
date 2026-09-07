@@ -3,6 +3,7 @@ import { extractLedgerData } from '@/lib/gemini';
 import { createServerClient } from '@/lib/supabase';
 import { OcrResult } from '@/lib/types';
 import { matchAllEntriesFast } from '@/lib/matching';
+import { verifySessionToken } from '@/lib/auth';
 
 export const maxDuration = 60; // Allow up to 60s for OCR processing
 
@@ -10,7 +11,8 @@ export async function POST(request: NextRequest) {
   try {
     // Verify authentication to protect Gemini API quota from unauthorized abuse
     const sessionCookie = request.cookies.get('lab_auth_session')?.value;
-    if (sessionCookie !== 'authenticated') {
+    const authSession = sessionCookie ? await verifySessionToken(sessionCookie) : null;
+    if (!authSession) {
       return NextResponse.json(
         { error: 'Unauthorized. Please sign in to process ledger photos.' },
         { status: 401 }

@@ -1,4 +1,3 @@
-import * as XLSX from 'xlsx';
 import { LabSession, LabEntry, Student } from './types';
 
 interface ExportEntry extends LabEntry {
@@ -14,10 +13,11 @@ function sanitizeFormula(val: unknown): string {
   return str;
 }
 
-export function generateSessionExcel(
+export async function generateSessionExcel(
   session: LabSession,
   entries: ExportEntry[]
-): XLSX.WorkBook {
+) {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
 
   // Build header rows
@@ -89,13 +89,14 @@ export function generateSessionExcel(
   return wb;
 }
 
-export function generateDateRangeExcel(
+export async function generateDateRangeExcel(
   sessions: { session: LabSession; entries: ExportEntry[] }[]
-): XLSX.WorkBook {
+) {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
 
-  sessions.forEach(({ session, entries }, index) => {
-    const tempWb = generateSessionExcel(session, entries);
+  for (const { session, entries } of sessions) {
+    const tempWb = await generateSessionExcel(session, entries);
     const sheetName = tempWb.SheetNames[0];
     const ws = tempWb.Sheets[sheetName];
 
@@ -108,11 +109,12 @@ export function generateDateRangeExcel(
     }
 
     XLSX.utils.book_append_sheet(wb, ws, finalName);
-  });
+  }
 
   return wb;
 }
 
-export function downloadExcel(wb: XLSX.WorkBook, filename: string): void {
-  XLSX.writeFile(wb, filename);
+export async function downloadExcel(wb: unknown, filename: string): Promise<void> {
+  const XLSX = await import('xlsx');
+  XLSX.writeFile(wb as import('xlsx').WorkBook, filename);
 }

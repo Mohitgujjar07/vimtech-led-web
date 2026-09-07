@@ -46,3 +46,47 @@ Produce a standalone Markdown report document containing:
 ### Deliverable Quality
 - [ ] Complete audit report structured with Executive Summary, Severity Matrix, Detailed Code Audit, and Remediation Roadmap.
 - [ ] Zero source code modifications made during the audit run.
+
+## Follow-up — 2026-09-06T16:33:08Z
+
+Perform a comprehensive security audit and bug remediation across all source files in the VIMTECH Lab Ledger application, resolving all build, TypeScript, runtime, and configuration errors so that the repository deploys cleanly and reliably to GitHub and Vercel.
+
+Working directory: d:\clg-led-web
+Integrity mode: development
+
+## Requirements
+
+### R1. Zero-Error Production Build & Type Safety
+Audit every source file in app/, components/, and lib/. Fix all TypeScript type mismatches, missing exports, unhandled promises, and ESLint issues. The production build (npm run build) must exit cleanly with code 0 without skipping type checking or linting.
+
+### R2. Security, Secret Management & Route Protection
+1. Inspect the entire repository for any hardcoded API keys, Supabase service keys, database passwords, or credentials.
+2. Verify .gitignore strictly protects .env.local and all private secrets.
+3. Ensure .env.local.example provides a sanitized template with all environment variables required for production deployment.
+4. Audit middleware and API routes (/api/auth/*, /api/ocr, /api/backup) to ensure unauthorized requests cannot access protected operations or leak data.
+
+### R3. Vercel & Production Deployment Readiness
+1. Validate next.config.js, vercel.json, and package.json for Vercel deployment.
+2. Ensure serverless functions (particularly /api/ocr and /api/backup) stay within Vercel execution timeouts and payload size constraints.
+3. Provide a clear Vercel deployment checklist documenting all required environment variables and production build settings.
+
+### R4. Runtime Error Handling & Resilience
+Audit core operational flows—including Gemini AI OCR extraction, PDF generation, Excel generation, and Supabase batch operations—to verify that unexpected errors trigger clear user feedback (toasts) without crashing the UI or hanging requests.
+
+## Acceptance Criteria
+
+### Build & Verification
+- [ ] npm run build exits with code 0 in a clean environment without errors or warnings.
+- [ ] No TypeScript compiler errors (tsc --noEmit).
+- [ ] All dynamic and static routes compile cleanly for Vercel deployment.
+
+### Security
+- [ ] No production secrets or service role keys are present in repository tracked files.
+- [ ] Authentication middleware intercepts unauthenticated access on all protected routes.
+- [ ] .env.local.example is complete, accurate, and safe for public GitHub repository visibility.
+
+### Documentation & Report
+- [ ] A comprehensive AUDIT_REPORT.md is generated detailing:
+  - Discovered security issues and fixes applied.
+  - Bugs, memory leaks, or type errors resolved.
+  - Vercel Deployment Guide with all environment variables and step-by-step GitHub-to-Vercel setup instructions.

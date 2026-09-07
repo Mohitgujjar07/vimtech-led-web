@@ -1,8 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
-  Download,
   FileSpreadsheet,
   FileText,
   Filter,
@@ -11,7 +10,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { createBrowserClient } from '@/lib/supabase';
-import { LabSession, LabEntry } from '@/lib/types';
+import { LabSession } from '@/lib/types';
 
 export default function ExportPage() {
   const [sessions, setSessions] = useState<LabSession[]>([]);
@@ -37,12 +36,14 @@ export default function ExportPage() {
 
   const loadSessions = async () => {
     const supabase = createBrowserClient();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('lab_sessions')
       .select('*')
       .order('session_date', { ascending: false });
 
-    if (data) {
+    if (error) {
+      toast.error(`Failed to load sessions: ${error.message}`);
+    } else if (data) {
       setSessions(data);
       setSections([...new Set(data.map((s) => s.section).filter(Boolean) as string[])]);
       setClasses([...new Set(data.map((s) => s.class_name).filter(Boolean) as string[])]);
@@ -51,14 +52,18 @@ export default function ExportPage() {
     setLoading(false);
   };
 
-  const filteredSessions = sessions.filter((s) => {
-    if (dateFrom && s.session_date < dateFrom) return false;
-    if (dateTo && s.session_date > dateTo) return false;
-    if (filterSection && s.section !== filterSection) return false;
-    if (filterClass && s.class_name !== filterClass) return false;
-    if (filterFaculty && s.faculty_name !== filterFaculty) return false;
-    return true;
-  });
+  const filteredSessions = useMemo(
+    () =>
+      sessions.filter((s) => {
+        if (dateFrom && s.session_date < dateFrom) return false;
+        if (dateTo && s.session_date > dateTo) return false;
+        if (filterSection && s.section !== filterSection) return false;
+        if (filterClass && s.class_name !== filterClass) return false;
+        if (filterFaculty && s.faculty_name !== filterFaculty) return false;
+        return true;
+      }),
+    [sessions, dateFrom, dateTo, filterSection, filterClass, filterFaculty]
+  );
 
   const toggleSession = (id: string) => {
     const next = new Set(selectedIds);
@@ -89,38 +94,56 @@ export default function ExportPage() {
     try {
       const supabase = createBrowserClient();
 
-      // Fetch entries for all selected sessions
-      const sessionsWithEntries = await Promise.all(
-        toExport.map(async (session) => {
-          const { data: entries } = await supabase
-            .from('lab_entries')
-            .select('*, student:students(*)')
-            .eq('session_id', session.id)
-            .order('sl_no', { ascending: true });
-          return { session, entries: entries || [] };
-        })
-      );
+      // Single batch query instead of N+1 individual queries
+      const sessionIds = toExport.map((s) => s.id);
+      const { data: allEntries, error: entriesError } = await supabase
+        .from('lab_entries')
+        .select('*, student:students(*)')
+        .in('session_id', sessionIds)
+        .order('sl_no', { ascending: true });
+
+      if (entriesError) {
+        throw new Error(`Failed to load entries: ${entriesError.message}`);
+      }
+
+      // Group entries by session_id
+      const entriesBySession = new Map<string, typeof allEntries>();
+      for (const entry of allEntries || []) {
+        const sid = entry.session_id;
+        if (!entriesBySession.has(sid)) entriesBySession.set(sid, []);
+        entriesBySession.get(sid)!.push(entry);
+      }
+
+      const sessionsWithEntries = toExport.map((session) => ({
+        session,
+        entries: entriesBySession.get(session.id) || [],
+      }));
 
       if (format === 'excel') {
         const { generateDateRangeExcel, downloadExcel } = await import(
           '@/lib/export-excel'
         );
-        const wb = generateDateRangeExcel(sessionsWithEntries);
-        downloadExcel(wb, `lab-sessions-export.xlsx`);
+        const wb = await generateDateRangeExcel(sessionsWithEntries);
+        await downloadExcel(wb, `lab-sessions-export.xlsx`);
         toast.success(`Exported ${toExport.length} sessions as Excel`);
       } else {
-        // Fetch logo as base64
+        // Fetch logo as base64 safely
         let logoBase64: string | undefined;
         try {
           const logoRes = await fetch('/logo.png');
-          const blob = await logoRes.blob();
-          logoBase64 = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.readAsDataURL(blob);
-          });
-        } catch {
-          // Continue without logo if fetch fails
+          if (logoRes.ok) {
+            const blob = await logoRes.blob();
+            if (blob.type.startsWith('image/')) {
+              logoBase64 = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result as string);
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+              });
+            }
+          }
+        } catch (logoErr) {
+          console.warn('PDF logo fetch failed, proceeding without logo:', logoErr);
         }
 
         const { pdf } = await import('@react-pdf/renderer');
@@ -141,7 +164,9 @@ export default function ExportPage() {
         toast.success(`Exported ${sessionsWithEntries.length} sessions to PDF`);
       }
     } catch (err: unknown) {
-      toast.error('Export failed');
+      console.error('Export failed:', err);
+      const message = err instanceof Error ? err.message : 'Export failed';
+      toast.error(message);
     } finally {
       setExporting(false);
     }
@@ -284,7 +309,7 @@ export default function ExportPage() {
       )}
 
       {/* Export buttons */}
-      <div className="sticky bottom-0 mt-6 border-t border-gray-200 bg-gray-50 px-4 py-4 sm:flex sm:gap-3">
+      <div className="sticky bottom-16 md:bottom-0 z-30 mt-6 border-t border-gray-200 bg-white/95 backdrop-blur-xs px-4 py-3 sm:flex sm:gap-3 shadow-md md:shadow-none rounded-t-xl md:rounded-none">
         <button
           onClick={() => exportSelected('excel')}
           disabled={exporting || filteredSessions.length === 0}

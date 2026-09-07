@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import Link from 'next/link';
 import {
   Monitor,
@@ -19,7 +19,6 @@ import {
   Plus,
   TrendingUp,
   PieChart,
-  Activity,
   CheckCircle2,
   Wrench,
 } from 'lucide-react';
@@ -101,16 +100,22 @@ export default function DashboardPage() {
 
   const [sessions, setSessions] = useState<LabSession[]>([]);
 
+  // Debounce timer for student search
+  const searchDebounceRef = useRef<NodeJS.Timeout | null>(null);
+
   useEffect(() => {
     loadOverview();
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
   }, []);
 
   const loadOverview = async () => {
     const supabase = createBrowserClient();
 
-    const [sessionsRes, distinctEntriesRes] = await Promise.all([
+    const [sessionsRes, entriesRes] = await Promise.all([
       supabase.from('lab_sessions').select('*').order('session_date', { ascending: false }),
-      supabase.from('lab_entries').select('raw_ucms_ocr, raw_name_ocr'),
+      supabase.from('lab_entries').select('session_id, raw_ucms_ocr, raw_name_ocr, signature_present, remarks'),
     ]);
 
     const allSessions = sessionsRes.data || [];
@@ -118,20 +123,18 @@ export default function DashboardPage() {
     setTotalSessions(allSessions.length);
     setConfirmedSessions(allSessions.filter((s) => s.faculty_confirmed).length);
 
+    const entryRows = entriesRes.data || [];
+
     // Unique students recorded from physical ledger entries
     const uniqueKeys = new Set(
-      (distinctEntriesRes.data || [])
+      entryRows
         .map((e) => (e.raw_ucms_ocr || e.raw_name_ocr || '').trim().toLowerCase())
         .filter(Boolean)
     );
     setTotalStudents(uniqueKeys.size);
 
-    // Query entries to compute counts, hardware categories, signature stats & occupancy
+    // Compute counts, hardware categories, signature stats & occupancy from single query
     try {
-      const { data: entryRows } = await supabase
-        .from('lab_entries')
-        .select('session_id, signature_present, remarks');
-
       const countMap = new Map<string, number>();
       let mouseCount = 0;
       let keyboardCount = 0;
@@ -140,7 +143,7 @@ export default function DashboardPage() {
       let signedCount = 0;
       let unsignedCount = 0;
 
-      for (const row of entryRows || []) {
+      for (const row of entryRows) {
         if (row.session_id) {
           countMap.set(row.session_id, (countMap.get(row.session_id) || 0) + 1);
         }
@@ -337,14 +340,18 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-      <p className="mt-1 text-sm text-gray-500">
-        Analytics, tracking, and cross-checks
-      </p>
+    <div className="space-y-4">
+      <div>
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-gray-900">
+          Analytics Dashboard
+        </h1>
+        <p className="mt-0.5 text-xs sm:text-sm text-gray-500">
+          Hardware tracking, signature compliance, and lab usage cross-checks
+        </p>
+      </div>
 
-      {/* Tabs */}
-      <div className="mt-6 flex gap-1 overflow-x-auto rounded-xl bg-gray-100 p-1">
+      {/* Responsive Tabs Segmented Bar */}
+      <div className="flex gap-1 overflow-x-auto rounded-2xl bg-gray-200/80 p-1 no-scrollbar">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           return (
@@ -354,14 +361,14 @@ export default function DashboardPage() {
                 setActiveTab(tab.id);
                 if (tab.id === 'systems' && flaggedSystems.length === 0) loadFlaggedSystems();
               }}
-              className={`flex items-center gap-2 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+              className={`flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-2 text-xs font-bold transition-all ${
                 activeTab === tab.id
-                  ? 'bg-white text-brand-700 shadow-sm'
+                  ? 'bg-white text-brand-700 shadow-2xs'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Icon className="h-4 w-4" />
-              {tab.label}
+              <Icon className="h-3.5 w-3.5" />
+              <span>{tab.label}</span>
             </button>
           );
         })}
@@ -369,23 +376,23 @@ export default function DashboardPage() {
 
       {/* Overview Tab */}
       {activeTab === 'overview' && (
-        <div className="mt-6 space-y-6">
+        <div className="space-y-4">
           {/* Stats cards */}
           {loading ? (
-            <div className="flex justify-center py-12">
-              <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
+            <div className="flex justify-center py-16">
+              <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
             </div>
           ) : (
             <>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-                <div className="card">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-brand-50">
-                      <Calendar className="h-5 w-5 text-brand-700" />
+              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+                <div className="card p-3.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50">
+                      <Calendar className="h-4 w-4 text-brand-700" />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">{totalSessions}</p>
-                      <p className="text-xs text-gray-500">Total Sessions</p>
+                      <p className="text-xl font-bold text-gray-900 leading-tight">{totalSessions}</p>
+                      <p className="text-[11px] text-gray-500">Total Sessions</p>
                     </div>
                   </div>
                 </div>
@@ -1032,8 +1039,13 @@ export default function DashboardPage() {
               type="text"
               value={studentSearch}
               onChange={(e) => {
-                setStudentSearch(e.target.value);
-                searchStudentsForHistory(e.target.value);
+                const value = e.target.value;
+                setStudentSearch(value);
+                // Debounce: wait 300ms before firing DB query
+                if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+                searchDebounceRef.current = setTimeout(() => {
+                  searchStudentsForHistory(value);
+                }, 300);
               }}
               placeholder="Search student by name or UUCMS..."
               className="input pl-10"

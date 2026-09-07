@@ -10,6 +10,8 @@ import {
   Trash2,
   Loader2,
   Sparkles,
+  Check,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { createBrowserClient } from '@/lib/supabase';
@@ -24,9 +26,11 @@ interface ManualEntry {
   remarks: string;
 }
 
+const QUICK_SECTIONS = ['A', 'B', 'C', 'BCA-1', 'BCA-3', 'BCA-5'];
+
 export default function NewSessionPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<'manual' | 'photo'>('photo');
+  const [mode, setMode] = useState<'photo' | 'manual'>('photo');
   const [saving, setSaving] = useState(false);
   const [processing, setProcessing] = useState(false);
 
@@ -40,7 +44,7 @@ export default function NewSessionPage() {
 
   // Manual entries
   const [entries, setEntries] = useState<ManualEntry[]>([
-    { sl_no: 1, name: '', ucms_no: '', system_no: '', signature_present: false, remarks: '' },
+    { sl_no: 1, name: '', ucms_no: '', system_no: '', signature_present: true, remarks: '' },
   ]);
 
   // Photo uploads
@@ -54,7 +58,7 @@ export default function NewSessionPage() {
         name: '',
         ucms_no: '',
         system_no: '',
-        signature_present: false,
+        signature_present: true,
         remarks: '',
       },
     ]);
@@ -105,10 +109,15 @@ export default function NewSessionPage() {
         .select()
         .single();
 
-      if (sessionError) throw sessionError;
+      if (sessionError || !session) {
+        throw new Error(sessionError?.message || 'Failed to create session');
+      }
 
       // Fetch enrolled students to link student_id if matched
-      const { data: rosterStudents } = await supabase.from('students').select('id, name, ucms_no');
+      const { data: rosterStudents, error: rosterError } = await supabase.from('students').select('id, name, ucms_no');
+      if (rosterError) {
+        throw new Error(`Failed to fetch student roster: ${rosterError.message}`);
+      }
       const studentMap = new Map<string, string>();
       for (const s of rosterStudents || []) {
         if (s.ucms_no) studentMap.set(s.ucms_no.trim().toLowerCase(), s.id);
@@ -141,9 +150,8 @@ export default function NewSessionPage() {
         .insert(entriesToInsert);
 
       if (entriesError) {
-        // Rollback created session so empty orphaned sessions aren't left behind
         await supabase.from('lab_sessions').delete().eq('id', session.id);
-        throw entriesError;
+        throw new Error(`Failed to insert entries: ${entriesError.message}`);
       }
 
       toast.success('Session created successfully!');
@@ -217,7 +225,6 @@ export default function NewSessionPage() {
     toast.loading('Optimizing photos for fast AI processing...', { id: 'ocr-toast' });
 
     try {
-      // Compress and optimize photos to high-res, lightweight payloads
       const photoData = await Promise.all(
         photos.map(async (p) => {
           const { base64, mimeType } = await compressPhoto(p.file);
@@ -244,8 +251,23 @@ export default function NewSessionPage() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'OCR processing failed');
+        const contentType = response.headers.get('content-type') || '';
+        let errorMessage = 'OCR processing failed';
+
+        if (contentType.includes('application/json')) {
+          const errorData = await response.json().catch(() => ({}));
+          errorMessage = errorData.error || errorMessage;
+        } else {
+          const text = await response.text().catch(() => '');
+          if (response.status === 413) {
+            errorMessage = 'Photos too large for upload. Please select fewer pages or lower resolution.';
+          } else if (response.status === 504) {
+            errorMessage = 'AI extraction timed out. Please retry.';
+          } else {
+            errorMessage = `Server error (${response.status})${text ? `: ${text.slice(0, 100)}` : ''}`;
+          }
+        }
+        throw new Error(errorMessage);
       }
 
       const { sessionId, totalEntries, matchedEntries } = await response.json();
@@ -262,100 +284,126 @@ export default function NewSessionPage() {
   };
 
   return (
-    <div className="mx-auto max-w-4xl">
-      <h1 className="text-2xl font-bold text-gray-900">New Lab Session</h1>
-      <p className="mt-1 text-sm text-gray-500">
-        Create a new session by entering data manually or uploading photos.
-      </p>
+    <div className="mx-auto max-w-3xl space-y-4 pb-12">
+      {/* ────────────────── Mode Segmented Control ────────────────── */}
+      <div className="flex rounded-2xl bg-gray-200/80 p-1.5 shadow-2xs">
+        <button
+          type="button"
+          onClick={() => setMode('photo')}
+          className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-bold transition-all ${
+            mode === 'photo'
+              ? 'bg-white text-brand-700 shadow-sm'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          <Camera className="h-4 w-4 stroke-[2.5]" />
+          <span>📸 Snap Ledger (AI OCR)</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('manual')}
+          className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2.5 text-sm font-bold transition-all ${
+            mode === 'manual'
+              ? 'bg-white text-brand-700 shadow-sm'
+              : 'text-gray-600 hover:text-gray-900'
+          }`}
+        >
+          <Keyboard className="h-4 w-4 stroke-[2.5]" />
+          <span>⌨️ Manual Typing</span>
+        </button>
+      </div>
 
-      {/* Session Header */}
-      <div className="card mt-6">
-        <h2 className="text-lg font-semibold text-gray-900">Session Details</h2>
-        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+      {/* ────────────────── Session Metadata Card ────────────────── */}
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 sm:p-5 shadow-xs">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-gray-700">
+            Session Details
+          </h2>
+          <span className="text-xs text-brand-700 font-medium">Auto-saved to records</span>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
           <div>
-            <label className="label">Date *</label>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Date *</label>
             <input
               type="date"
               value={sessionDate}
               onChange={(e) => setSessionDate(e.target.value)}
-              className="input"
+              className="input py-2 text-sm font-medium"
               required
             />
           </div>
+
           <div>
-            <label className="label">Section</label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-semibold text-gray-600">Section</label>
+              {/* Quick Section Pills */}
+              <div className="flex gap-1">
+                {QUICK_SECTIONS.slice(0, 3).map((sec) => (
+                  <button
+                    key={sec}
+                    type="button"
+                    onClick={() => setSection(sec)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold transition-all ${
+                      section === sec
+                        ? 'bg-brand-700 text-white'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    }`}
+                  >
+                    {sec}
+                  </button>
+                ))}
+              </div>
+            </div>
             <input
               type="text"
               value={section}
               onChange={(e) => setSection(e.target.value)}
-              placeholder="e.g. A, B, C"
-              className="input"
+              placeholder="e.g. A, B, or 5th Novas"
+              className="input py-2 text-sm font-medium"
             />
           </div>
+
           <div>
-            <label className="label">Class</label>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Class / Degree</label>
             <input
               type="text"
               value={className}
               onChange={(e) => setClassName(e.target.value)}
               placeholder="e.g. BCA 3rd Sem"
-              className="input"
+              className="input py-2 text-sm"
             />
           </div>
+
           <div>
-            <label className="label">Faculty Name</label>
+            <label className="text-xs font-semibold text-gray-600 mb-1 block">Faculty In-Charge</label>
             <input
               type="text"
               value={facultyName}
               onChange={(e) => setFacultyName(e.target.value)}
               placeholder="e.g. Dr. Sharma"
-              className="input"
+              className="input py-2 text-sm"
             />
           </div>
         </div>
       </div>
 
-      {/* Mode toggle */}
-      <div className="mt-6 flex gap-2">
-        <button
-          onClick={() => setMode('photo')}
-          className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors ${
-            mode === 'photo'
-              ? 'bg-brand-700 text-white'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          <Camera className="h-4 w-4" />
-          Upload Photos (OCR)
-        </button>
-        <button
-          onClick={() => setMode('manual')}
-          className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors ${
-            mode === 'manual'
-              ? 'bg-brand-700 text-white'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >
-          <Keyboard className="h-4 w-4" />
-          Manual Entry
-        </button>
-      </div>
-
-      {/* Photo mode */}
+      {/* ────────────────── Photo Mode ────────────────── */}
       {mode === 'photo' && (
-        <div className="mt-6 space-y-4">
-          <div className="card">
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-xs">
             <PhotoUpload onPhotosReady={setPhotos} />
           </div>
+
           <button
             onClick={handlePhotoProcess}
             disabled={processing || photos.length === 0}
-            className="btn-primary w-full text-base py-3"
+            className="btn-primary w-full text-base py-3.5 rounded-2xl shadow-lg transition-all active:scale-98"
           >
             {processing ? (
               <>
                 <Loader2 className="h-5 w-5 animate-spin" />
-                Processing with AI...
+                Processing with Gemini AI...
               </>
             ) : (
               <>
@@ -367,26 +415,116 @@ export default function NewSessionPage() {
         </div>
       )}
 
-      {/* Manual mode */}
+      {/* ────────────────── Manual Mode (Adaptive) ────────────────── */}
       {mode === 'manual' && (
-        <div className="mt-6 space-y-4">
-          <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
+        <div className="space-y-3">
+          {/* Mobile Card List (< sm) */}
+          <div className="block sm:hidden space-y-2.5">
+            {entries.map((entry, idx) => (
+              <div
+                key={idx}
+                className="rounded-xl border border-gray-200 bg-white p-3.5 shadow-xs space-y-2.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-brand-50 font-mono text-xs font-bold text-brand-700">
+                      {entry.sl_no}
+                    </span>
+                    <input
+                      type="text"
+                      value={entry.name}
+                      onChange={(e) => updateManualEntry(idx, 'name', e.target.value)}
+                      placeholder="Student Name *"
+                      className="input py-1 text-sm font-semibold flex-1 min-w-0"
+                    />
+                  </div>
+                  {entries.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeManualRow(idx)}
+                      className="shrink-0 rounded p-1 text-gray-400 hover:text-red-500"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-semibold text-gray-500 uppercase block mb-0.5">UUCMS Roll</label>
+                    <input
+                      type="text"
+                      value={entry.ucms_no}
+                      onChange={(e) => updateManualEntry(idx, 'ucms_no', e.target.value)}
+                      placeholder="e.g. U11YB24S..."
+                      className="input py-1 font-mono text-xs uppercase"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-semibold text-gray-500 uppercase block mb-0.5">System No</label>
+                    <input
+                      type="text"
+                      value={entry.system_no}
+                      onChange={(e) => updateManualEntry(idx, 'system_no', e.target.value)}
+                      placeholder="Sys #"
+                      className="input py-1 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => updateManualEntry(idx, 'signature_present', !entry.signature_present)}
+                    className={`flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold ${
+                      entry.signature_present
+                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-300'
+                        : 'bg-gray-100 text-gray-500 border border-gray-200'
+                    }`}
+                  >
+                    {entry.signature_present ? (
+                      <>
+                        <Check className="h-3 w-3 stroke-[3]" />
+                        <span>Signed</span>
+                      </>
+                    ) : (
+                      <>
+                        <X className="h-3 w-3" />
+                        <span>Unsigned</span>
+                      </>
+                    )}
+                  </button>
+
+                  <input
+                    type="text"
+                    value={entry.remarks}
+                    onChange={(e) => updateManualEntry(idx, 'remarks', e.target.value)}
+                    placeholder="Remarks (optional)"
+                    className="input py-1 text-xs flex-1"
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop Table (>= sm) */}
+          <div className="hidden sm:block overflow-hidden rounded-xl border border-gray-200 bg-white shadow-xs">
             <table className="min-w-full text-sm">
               <thead>
-                <tr className="border-b bg-gray-50">
-                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600">SL</th>
-                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600">Name</th>
+                <tr className="border-b bg-gray-50/80">
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-12">SL</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600">Name *</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-600">UUCMS No</th>
-                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600">System No</th>
-                  <th className="px-3 py-2.5 text-center font-semibold text-gray-600">Signed</th>
+                  <th className="px-3 py-2.5 text-left font-semibold text-gray-600 w-24">Sys #</th>
+                  <th className="px-3 py-2.5 text-center font-semibold text-gray-600 w-20">Signed</th>
                   <th className="px-3 py-2.5 text-left font-semibold text-gray-600">Remarks</th>
-                  <th className="px-3 py-2.5"></th>
+                  <th className="px-3 py-2.5 w-12"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {entries.map((entry, idx) => (
                   <tr key={idx}>
-                    <td className="px-3 py-2 text-gray-400">{entry.sl_no}</td>
+                    <td className="px-3 py-2 text-gray-400 font-mono text-xs">{entry.sl_no}</td>
                     <td className="px-3 py-2">
                       <input
                         type="text"
@@ -402,7 +540,7 @@ export default function NewSessionPage() {
                         value={entry.ucms_no}
                         onChange={(e) => updateManualEntry(idx, 'ucms_no', e.target.value)}
                         placeholder="UUCMS number"
-                        className="input py-1 font-mono text-xs"
+                        className="input py-1 font-mono text-xs uppercase"
                       />
                     </td>
                     <td className="px-3 py-2">
@@ -410,7 +548,7 @@ export default function NewSessionPage() {
                         type="text"
                         value={entry.system_no}
                         onChange={(e) => updateManualEntry(idx, 'system_no', e.target.value)}
-                        placeholder="Sys #"
+                        placeholder="e.g. 1"
                         className="input w-20 py-1 text-xs"
                       />
                     </td>
@@ -431,7 +569,7 @@ export default function NewSessionPage() {
                         className="input py-1 text-xs"
                       />
                     </td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2 text-center">
                       {entries.length > 1 && (
                         <button
                           onClick={() => removeManualRow(idx)}
@@ -447,15 +585,20 @@ export default function NewSessionPage() {
             </table>
           </div>
 
-          <div className="flex gap-3">
-            <button onClick={addManualRow} className="btn-secondary">
+          <div className="flex gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={addManualRow}
+              className="btn-secondary py-2.5 text-xs font-semibold"
+            >
               <Plus className="h-4 w-4" />
-              Add Row
+              Add Student
             </button>
             <button
+              type="button"
               onClick={handleManualSave}
               disabled={saving}
-              className="btn-primary flex-1"
+              className="btn-primary flex-1 py-2.5 text-xs font-bold"
             >
               {saving ? (
                 <>
@@ -465,7 +608,7 @@ export default function NewSessionPage() {
               ) : (
                 <>
                   <Save className="h-4 w-4" />
-                  Save Session
+                  Save Session ({entries.filter((e) => e.name.trim()).length} Students)
                 </>
               )}
             </button>

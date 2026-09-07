@@ -19,30 +19,32 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontFamily: 'Helvetica',
   },
-  headerRow: {
-    flexDirection: 'row',
+  headerContainer: {
     alignItems: 'center',
-    marginBottom: 15,
+    justifyContent: 'center',
+    marginBottom: 12,
     borderBottom: '2px solid #6b21a8',
-    paddingBottom: 10,
+    paddingBottom: 8,
   },
   logo: {
-    width: 50,
-    height: 50,
-    marginRight: 15,
-  },
-  titleBlock: {
-    flex: 1,
+    width: 380,
+    height: 62,
+    objectFit: 'contain',
+    alignSelf: 'center',
+    marginBottom: 6,
   },
   title: {
-    fontSize: 16,
+    fontSize: 15,
     fontFamily: 'Helvetica-Bold',
     color: '#6b21a8',
+    textAlign: 'center',
   },
   subtitle: {
-    fontSize: 10,
-    color: '#666',
+    fontSize: 9,
+    fontFamily: 'Helvetica',
+    color: '#666666',
     marginTop: 2,
+    textAlign: 'center',
   },
   metaRow: {
     flexDirection: 'row',
@@ -144,14 +146,12 @@ export function SessionPdfDocument({
     <Document>
       <Page size="A4" style={styles.page}>
         {/* Header */}
-        <View style={styles.headerRow}>
+        <View style={styles.headerContainer}>
           {logoBase64 && (
             <Image style={styles.logo} src={logoBase64} />
           )}
-          <View style={styles.titleBlock}>
-            <Text style={styles.title}>Computer Lab Ledger</Text>
-            <Text style={styles.subtitle}>VIMTECH</Text>
-          </View>
+          <Text style={styles.title}>Computer Lab Ledger</Text>
+          <Text style={styles.subtitle}>VIMTECH</Text>
         </View>
 
         {/* Session metadata */}
@@ -224,7 +224,7 @@ export function SessionPdfDocument({
 
         {/* Footer */}
         <View style={styles.footer} fixed>
-          <Text>Lab Ledger — VG College</Text>
+          <Text>Lab Ledger — VIMTECH</Text>
           <Text
             render={({ pageNumber, totalPages }) =>
               `Page ${pageNumber} of ${totalPages}`
@@ -255,14 +255,12 @@ export function MultiSessionPdfDocument({
         return (
           <Page key={session.id || sIdx} size="A4" style={styles.page}>
             {/* Header */}
-            <View style={styles.headerRow}>
+            <View style={styles.headerContainer}>
               {logoBase64 && (
                 <Image style={styles.logo} src={logoBase64} />
               )}
-              <View style={styles.titleBlock}>
-                <Text style={styles.title}>Computer Lab Ledger</Text>
-                <Text style={styles.subtitle}>VIMTECH</Text>
-              </View>
+              <Text style={styles.title}>Computer Lab Ledger</Text>
+              <Text style={styles.subtitle}>VIMTECH</Text>
             </View>
 
             {/* Session metadata */}
@@ -335,7 +333,7 @@ export function MultiSessionPdfDocument({
 
             {/* Footer */}
             <View style={styles.footer} fixed>
-              <Text>Lab Ledger — VG College</Text>
+              <Text>Lab Ledger — VIMTECH</Text>
               <Text
                 render={({ pageNumber, totalPages }) =>
                   `Page ${pageNumber} of ${totalPages}`

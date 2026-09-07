@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
+import { timingSafeEqualStr } from '@/lib/auth';
 import * as XLSX from 'xlsx';
+
+export const maxDuration = 60;
 
 // This endpoint is designed to be called by Vercel Cron (weekly)
 // or manually by an admin. It generates an Excel backup of recent sessions
@@ -8,11 +11,17 @@ import * as XLSX from 'xlsx';
 
 export async function GET(request: Request) {
   try {
-    // Verify cron secret — reject if missing or mismatched
+    // Verify cron secret — reject if missing or mismatched using timingSafeEqualStr
     const authHeader = request.headers.get('authorization');
     const cronSecret = process.env.CRON_SECRET;
 
-    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+    const expectedHeader = cronSecret ? `Bearer ${cronSecret}` : '';
+    const isAuthorized =
+      Boolean(cronSecret) &&
+      Boolean(authHeader) &&
+      timingSafeEqualStr(authHeader as string, expectedHeader);
+
+    if (!isAuthorized) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
@@ -38,6 +47,26 @@ export async function GET(request: Request) {
         message: 'No sessions found in the past week',
         backupCreated: false,
       });
+    }
+
+    // Batch fetch all entries for these sessions in a single query
+    const sessionIds = sessions.map((s) => s.id);
+    const { data: allEntries, error: entriesError } = await supabase
+      .from('lab_entries')
+      .select('*, student:students(name, ucms_no)')
+      .in('session_id', sessionIds)
+      .order('sl_no', { ascending: true });
+
+    if (entriesError) {
+      throw new Error(`Failed to fetch session entries: ${entriesError.message}`);
+    }
+
+    // Group entries by session_id
+    const entriesBySessionId = new Map<string, typeof allEntries>();
+    for (const entry of allEntries || []) {
+      const existing = entriesBySessionId.get(entry.session_id) || [];
+      existing.push(entry);
+      entriesBySessionId.set(entry.session_id, existing);
     }
 
     // Create workbook
@@ -68,11 +97,7 @@ export async function GET(request: Request) {
 
     // Individual session sheets
     for (const session of sessions) {
-      const { data: entries } = await supabase
-        .from('lab_entries')
-        .select('*, student:students(name, ucms_no)')
-        .eq('session_id', session.id)
-        .order('sl_no', { ascending: true });
+      const entries = entriesBySessionId.get(session.id) || [];
 
       const sheetData = [
         ['COMPUTER LAB LEDGER'],
@@ -81,7 +106,7 @@ export async function GET(request: Request) {
         ['Class:', session.class_name || '', '', 'Faculty:', session.faculty_name || ''],
         [],
         ['SL.NO', 'NAME', 'UCMS NO.', 'SYSTEM NO.', 'SIGNED', 'REMARKS'],
-        ...(entries || []).map((e: Record<string, unknown>) => [
+        ...entries.map((e: Record<string, unknown>) => [
           e.sl_no || '',
           (e.student as Record<string, unknown>)?.name || e.raw_name_ocr || '',
           (e.student as Record<string, unknown>)?.ucms_no || e.raw_ucms_ocr || '',
@@ -92,9 +117,9 @@ export async function GET(request: Request) {
         [],
         [
           '',
-          `Total: ${(entries || []).length}`,
+          `Total: ${entries.length}`,
           '',
-          `Systems: ${session.total_system_count ?? (entries || []).length}`,
+          `Systems: ${session.total_system_count ?? entries.length}`,
           `Mouse: ${session.total_mouse_count ?? ''}`,
           `Keyboard: ${session.total_keyboard_count ?? ''}`,
         ],
@@ -166,24 +191,33 @@ export async function GET(request: Request) {
         }
       }
 
-      for (const photo of photosToDelete) {
-        try {
+      if (photosToDelete.length > 0) {
+        const paths: string[] = [];
+        for (const photo of photosToDelete) {
           const url = photo.photo_url;
-          const match = url.match(/session-photos\/(.+)$/);
-          const storagePath = match ? match[1] : null;
-
-          if (storagePath) {
-            await supabase.storage.from('session-photos').remove([storagePath]);
+          const match = url ? url.match(/session-photos\/(.+)$/) : null;
+          if (match && match[1]) {
+            paths.push(match[1]);
           }
+        }
 
-          await supabase
-            .from('session_photos')
-            .update({ archived: true })
-            .eq('id', photo.photo_id);
+        if (paths.length > 0) {
+          const { error: removeError } = await supabase.storage.from('session-photos').remove(paths);
+          if (removeError) {
+            console.error('Failed to batch remove storage paths:', removeError);
+          }
+        }
 
-          photosArchived++;
-        } catch (photoErr) {
-          console.error(`Failed to cleanup photo ${photo.photo_id}:`, photoErr);
+        const photoIds = photosToDelete.map((p) => p.photo_id);
+        const { error: archiveError } = await supabase
+          .from('session_photos')
+          .update({ archived: true })
+          .in('id', photoIds);
+
+        if (archiveError) {
+          console.error('Failed to batch archive session photos:', archiveError);
+        } else {
+          photosArchived = photosToDelete.length;
         }
       }
     } catch (retentionErr) {

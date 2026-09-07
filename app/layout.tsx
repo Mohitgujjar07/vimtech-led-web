@@ -11,6 +11,7 @@ export const viewport = {
   initialScale: 1,
   maximumScale: 5,
   themeColor: '#6b21a8',
+  viewportFit: 'cover',
 };
 
 export const metadata: Metadata = {
@@ -29,9 +30,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body className={`${inter.className} min-h-screen bg-gray-50/70 antialiased`}>
         <Navbar />
-        <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+        <main className="mx-auto max-w-7xl px-3.5 pt-3 pb-24 sm:px-6 sm:py-6 lg:px-8 md:pb-8">
           {children}
         </main>
         <Toaster position="top-right" richColors closeButton />
