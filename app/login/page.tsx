@@ -120,12 +120,13 @@ function LoginForm() {
       <div className="w-full max-w-sm">
         {/* Header with College Logo */}
         <div className="mb-6 text-center">
-          <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border border-purple-100 bg-white p-2 shadow-sm">
+          <div className="mx-auto mb-5 flex h-28 w-28 sm:h-32 sm:w-32 items-center justify-center overflow-hidden rounded-2xl border border-purple-100 bg-white p-2.5 shadow-md shadow-purple-500/10 transition-all hover:shadow-lg hover:shadow-purple-500/15">
             <Image
               src="/logo.png"
               alt="Vaisiri Institute of Management & Technology"
-              width={80}
-              height={80}
+              width={128}
+              height={128}
+              quality={100}
               className="h-full w-full object-contain"
               priority
             />
