@@ -122,21 +122,24 @@ export default function Navbar() {
       </nav>
 
       {/* ────────────────── MOBILE SLIM TOP HEADER (< md) ────────────────── */}
-      <header className="sticky top-0 z-40 flex h-13 items-center justify-between border-b border-gray-200 bg-white/95 px-4 md:hidden">
-        <Link href="/sessions" className="flex items-center gap-2">
-          <div className="flex h-8 w-28 items-center overflow-hidden rounded bg-white px-1">
-            <Image
-              src="/logo.png"
-              alt="VIMTECH"
-              width={160}
-              height={32}
-              className="h-full w-auto object-contain"
-              priority
-            />
+      <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-gray-200 bg-white/95 px-3.5 md:hidden">
+        <Link href="/sessions" className="flex items-center gap-2.5">
+          <Image
+            src="/app-logo.png"
+            alt="VIMTECH Lab Ledger"
+            width={36}
+            height={36}
+            className="h-9 w-9 rounded-xl object-contain shadow-2xs border border-purple-100"
+            priority
+          />
+          <div>
+            <span className="text-xs font-black tracking-tight text-gray-900 block leading-tight">
+              VIMTECH
+            </span>
+            <span className="text-[11px] font-bold text-brand-700 block leading-tight">
+              Lab Ledger
+            </span>
           </div>
-          <span className="text-sm font-bold tracking-tight text-brand-700">
-            Lab Ledger
-          </span>
         </Link>
 
         <button
