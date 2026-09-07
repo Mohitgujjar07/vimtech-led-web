@@ -27,8 +27,8 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   logo: {
-    width: 380,
-    height: 62,
+    width: 64,
+    height: 64,
     objectFit: 'contain',
     alignSelf: 'center',
     marginBottom: 6,

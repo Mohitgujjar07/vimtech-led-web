@@ -90,3 +90,45 @@ Audit core operational flows—including Gemini AI OCR extraction, PDF generatio
   - Discovered security issues and fixes applied.
   - Bugs, memory leaks, or type errors resolved.
   - Vercel Deployment Guide with all environment variables and step-by-step GitHub-to-Vercel setup instructions.
+
+## Follow-up — 2026-09-07T16:36:25Z
+
+Implement three major feature suites for the VIMTECH Computer Lab Ledger application: (1) AI Verification Superpowers with side-by-side photo inspection, handwriting alias auto-learning, and missing signature alerts; (2) Lab Hardware & Maintenance Tracking with fault ticketing, a maintenance dashboard, and a lab PC utilization heatmap; and (3) Student Attendance & Academic Analytics featuring 75% shortage warnings, individual student lab portfolios, and cross-section comparison analytics.
+
+Working directory: d:\clg-led-web
+Integrity mode: development
+
+## Requirements
+
+### R1. AI & Verification Superpowers
+- Side-by-Side Crop Viewer: When reviewing an extracted session in /sessions/[id], tapping or clicking any row dynamically highlights and zooms into the corresponding area/photo of the original paper register so faculty can visually cross-check ambiguous names, roll numbers, or systems in seconds.
+- Auto-Learning Handwriting Aliases: When faculty manually edits an OCR-extracted UUCMS number or name (e.g. correcting OCR misread U11YB2650188 to U11YB26S0188), save the mapping into a persistent student_ocr_aliases database table so future scans for that student automatically resolve with 100% confidence.
+- Missing Signature Highlighting: Automatically flag and visually highlight rows where a student entry was logged but signature_present is false, displaying quick-action warning badges in the session table and dashboard alerts for attendance irregularities.
+
+### R2. Lab Hardware & Maintenance Tracking
+- Faulty System Reporting: Provide quick-action "Report Hardware Issue" functionality directly from session review rows and dashboard (specifying PC number, component: Mouse, Keyboard, Monitor, OS/Boot, Network, and issue description).
+- Lab Assistant Maintenance Dashboard: A dedicated maintenance tab (/maintenance) allowing lab instructors and technicians to view all reported issues, update status (Pending, In Progress, Resolved, Needs Replacement), and log repair history.
+- PC Utilization Heatmap: An interactive visual lab floor plan layout (e.g., Systems 01 to 60) displaying usage frequency from session records, color-coded to identify overused vs consistently avoided systems (flagging potential sluggish hardware).
+
+### R3. Student Attendance & Academic Analytics
+- 75% Attendance Shortage Alerts: Calculate per-semester lab attendance percentages against scheduled sessions per degree/semester/section, with visual danger badges for students below the 75% threshold required for exam hall tickets.
+- Individual Student Lab Profile: Interactive modal or dedicated route from /roster showing a student's full historical transcript: total lab hours logged, system seating distribution, sessions attended, and attendance reliability.
+- Cross-Section Comparison Analytics: Visual comparative analytics on /dashboard comparing attendance rates, lab utilization hours, and session frequencies across sections (1B1, 1B2, 3-VNOVAS, PUC, etc.).
+
+### R4. Performance, Mobile-First & Production Readiness
+- Must follow all GEMINI.md rules: zero horizontal scroll on mobile (< 768px), touch targets >= 44px, row-level memoization for table views, dynamic imports for heavy charting libraries, Supabase singleton pattern.
+- npm run build must compile with code 0 and zero TypeScript or lint errors.
+
+## Acceptance Criteria
+
+### Verification & Build Integrity
+- [ ] npm run build passes with exit code 0 and 0 compiler errors.
+- [ ] Database schema migrations or tables for hardware issues and OCR aliases are properly created with RLS.
+- [ ] Side-by-side inspection functions responsively on both desktop split-screen and mobile modal drawer.
+- [ ] Correcting an OCR entry successfully persists an alias and applies on subsequent OCR matching.
+- [ ] Missing signatures are highlighted with distinct amber/red warning badges and filterable in the session view.
+- [ ] Hardware reporting logs issues to the database and displays live on the /maintenance dashboard.
+- [ ] PC Heatmap correctly renders system numbers with color intensity matching session frequency.
+- [ ] Roster student click opens detailed student lab history with session dates and systems logged.
+- [ ] 75% attendance shortage warnings accurately flag below-threshold students.
+

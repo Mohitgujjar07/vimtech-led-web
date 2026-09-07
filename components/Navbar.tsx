@@ -57,17 +57,20 @@ export default function Navbar() {
           <div className="flex h-16 items-center justify-between">
             {/* Logo + brand */}
             <Link href="/sessions" className="flex items-center gap-2.5">
-              <div className="flex h-10 max-w-[200px] items-center overflow-hidden rounded-lg bg-white px-2 py-1 border border-gray-100 shadow-xs">
+              <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-white p-1 border border-purple-100 shadow-2xs">
                 <Image
                   src="/logo.png"
                   alt="VIMTECH Logo"
-                  width={240}
+                  width={40}
                   height={40}
-                  className="h-full w-auto object-contain"
+                  className="h-full w-full object-contain"
                   priority
                 />
               </div>
-              <span className="text-lg font-bold text-brand-700">Lab Ledger</span>
+              <div className="flex flex-col">
+                <span className="text-base font-black text-gray-900 leading-tight">VIMTECH</span>
+                <span className="text-xs font-bold text-brand-700 leading-tight">Lab Ledger</span>
+              </div>
             </Link>
 
             {/* Desktop Navigation Links */}
