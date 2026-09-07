@@ -202,7 +202,7 @@ export default function NewSessionPage() {
       reader.onload = (e) => {
         const img = new window.Image();
         img.onload = () => {
-          const maxDim = 1200;
+          const maxDim = 1800;
           let { width, height } = img;
           if (width > maxDim || height > maxDim) {
             if (width > height) {
@@ -228,7 +228,7 @@ export default function NewSessionPage() {
           ctx.imageSmoothingQuality = 'high';
           ctx.drawImage(img, 0, 0, width, height);
 
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.70);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
           resolve({
             base64: dataUrl.split(',')[1],
             mimeType: 'image/jpeg',

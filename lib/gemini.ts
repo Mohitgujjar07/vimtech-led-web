@@ -37,9 +37,9 @@ Rules:
 - Preserve the exact SL.NO printed in that row.`;
 
 const FALLBACK_MODELS = [
-  'gemini-1.5-flash',
-  'gemini-2.0-flash',
-  'gemini-1.5-pro',
+  'gemini-2.5-flash',
+  'gemini-flash-latest',
+  'gemini-3.6-flash',
 ];
 
 export async function extractLedgerData(
@@ -56,7 +56,7 @@ export async function extractLedgerData(
   for (const modelName of FALLBACK_MODELS) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 18000);
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
 
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`,

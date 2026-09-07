@@ -54,12 +54,15 @@ export async function POST(request: NextRequest) {
     );
 
     // Process all photos through OCR concurrently for maximum speed
+    const errors: string[] = [];
     const ocrPromises = sortedPhotos.map(async (photo) => {
       try {
         const result = await extractLedgerData(photo.base64, photo.mimeType);
         return { result, pageNumber: photo.pageNumber };
       } catch (err) {
-        console.error(`OCR failed for page ${photo.pageNumber}:`, err);
+        const msg = err instanceof Error ? err.message : 'Unknown OCR error';
+        console.error(`OCR failed for page ${photo.pageNumber}:`, msg);
+        errors.push(`Page ${photo.pageNumber}: ${msg}`);
         return null;
       }
     });
@@ -70,8 +73,9 @@ export async function POST(request: NextRequest) {
     );
 
     if (ocrResults.length === 0) {
+      const detailedError = errors.length > 0 ? errors[0] : 'Please check your image clarity.';
       return NextResponse.json(
-        { error: 'OCR extraction failed for all photos. Please check your image clarity.' },
+        { error: `OCR extraction failed for all photos. ${detailedError}` },
         { status: 500 }
       );
     }
