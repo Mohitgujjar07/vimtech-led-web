@@ -8,6 +8,7 @@ import {
   Upload,
   Search,
   Trash2,
+  Pencil,
   Loader2,
   FileSpreadsheet,
   X,
@@ -47,7 +48,8 @@ export default function RosterPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [exportingDefaulters, setExportingDefaulters] = useState(false);
 
-  // New student form
+  // New / Edit student form
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [newName, setNewName] = useState('');
   const [newUcms, setNewUcms] = useState('');
   const [newSection, setNewSection] = useState('');
@@ -135,7 +137,23 @@ export default function RosterPage() {
     }
   };
 
-  const handleAddStudent = async (e: React.FormEvent) => {
+  const handleOpenAddModal = () => {
+    setEditingStudent(null);
+    setNewName('');
+    setNewUcms('');
+    setNewSection('');
+    setShowAddModal(true);
+  };
+
+  const handleOpenEditModal = (student: Student) => {
+    setEditingStudent(student);
+    setNewName(student.name);
+    setNewUcms(student.ucms_no);
+    setNewSection(student.section || '');
+    setShowAddModal(true);
+  };
+
+  const handleSaveStudent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newName.trim() || !newUcms.trim()) {
       toast.error('Student Name and UUCMS No are required');
@@ -145,22 +163,44 @@ export default function RosterPage() {
     setSubmitting(true);
     try {
       const supabase = createBrowserClient();
-      const { error } = await supabase.from('students').insert({
-        name: newName.trim(),
-        ucms_no: newUcms.trim().toUpperCase(),
-        section: newSection.trim() || null,
-      });
+      const cleanedName = newName.trim();
+      const cleanedUcms = newUcms.trim().toUpperCase().replace(/\s+/g, '');
+      const cleanedSection = newSection.trim() || null;
 
-      if (error) throw new Error(`Failed to add student: ${error.message}`);
+      if (editingStudent) {
+        const { error } = await supabase
+          .from('students')
+          .update({
+            name: cleanedName,
+            ucms_no: cleanedUcms,
+            section: cleanedSection,
+          })
+          .eq('id', editingStudent.id);
 
-      toast.success(`Student ${newName.trim()} added successfully!`);
+        if (error) throw new Error(`Failed to update student: ${error.message}`);
+        toast.success(`Student ${cleanedName} updated successfully!`);
+      } else {
+        const { error } = await supabase.from('students').upsert(
+          {
+            name: cleanedName,
+            ucms_no: cleanedUcms,
+            section: cleanedSection,
+          },
+          { onConflict: 'ucms_no' }
+        );
+
+        if (error) throw new Error(`Failed to enroll student: ${error.message}`);
+        toast.success(`Student ${cleanedName} added successfully!`);
+      }
+
       setNewName('');
       setNewUcms('');
       setNewSection('');
+      setEditingStudent(null);
       setShowAddModal(false);
       await loadStudentsAndAttendance();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to add student';
+      const msg = err instanceof Error ? err.message : 'Failed to save student';
       toast.error(msg);
     } finally {
       setSubmitting(false);
@@ -319,7 +359,7 @@ export default function RosterPage() {
             <span>{showUpload ? 'Close Batch' : 'Batch Upload'}</span>
           </button>
           <button
-            onClick={() => setShowAddModal(true)}
+            onClick={handleOpenAddModal}
             className="btn-primary py-2 px-3 text-xs sm:text-sm shadow-sm"
           >
             <Plus className="h-4 w-4 stroke-[2.5]" />
@@ -521,13 +561,22 @@ export default function RosterPage() {
                       </div>
                     </div>
                   </div>
-                  <button
-                    onClick={() => handleDeleteStudent(student.id, student.name)}
-                    className="shrink-0 rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors ml-2"
-                    title="Delete student"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0 ml-2">
+                    <button
+                      onClick={() => handleOpenEditModal(student)}
+                      className="rounded-lg p-2 text-gray-400 hover:bg-brand-50 hover:text-brand-600 transition-colors"
+                      title="Edit student"
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDeleteStudent(student.id, student.name)}
+                      className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                      title="Delete student"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -572,13 +621,22 @@ export default function RosterPage() {
                           : '—'}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <button
-                          onClick={() => handleDeleteStudent(student.id, student.name)}
-                          className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors"
-                          title="Delete student"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            onClick={() => handleOpenEditModal(student)}
+                            className="rounded p-1 text-gray-400 hover:bg-brand-50 hover:text-brand-600 transition-colors"
+                            title="Edit student"
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteStudent(student.id, student.name)}
+                            className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                            title="Delete student"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -738,24 +796,36 @@ export default function RosterPage() {
             <div className="flex items-center justify-between pb-3 border-b border-gray-100">
               <div className="flex items-center gap-2">
                 <Users className="h-5 w-5 text-brand-700" />
-                <h3 className="text-lg font-bold text-gray-900">Add Student to Roster</h3>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-900">
+                    {editingStudent ? 'Edit Student Details' : 'Add New Admission'}
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    {editingStudent
+                      ? 'Update name, roll number, or section'
+                      : 'Enroll a new student into the permanent roster'}
+                  </p>
+                </div>
               </div>
               <button
-                onClick={() => setShowAddModal(false)}
+                onClick={() => {
+                  setShowAddModal(false);
+                  setEditingStudent(null);
+                }}
                 className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
 
-            <form onSubmit={handleAddStudent} className="mt-4 space-y-4">
+            <form onSubmit={handleSaveStudent} className="mt-4 space-y-4">
               <div>
-                <label className="label">Student Name *</label>
+                <label className="label">Student Name (English) *</label>
                 <input
                   type="text"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  placeholder="e.g. Rahul Sharma"
+                  placeholder="e.g. MOHIT GUJJAR"
                   className="input"
                   required
                   autoFocus
@@ -768,32 +838,73 @@ export default function RosterPage() {
                   type="text"
                   value={newUcms}
                   onChange={(e) => setNewUcms(e.target.value)}
-                  placeholder="e.g. U11YB24S0001"
+                  placeholder="e.g. U11YB26S0500"
                   className="input font-mono uppercase"
                   required
                 />
               </div>
 
               <div>
-                <label className="label">Section (optional)</label>
-                <select
+                <div className="flex items-center justify-between mb-1">
+                  <label className="label mb-0">Section / Semester (optional)</label>
+                  <span className="text-[11px] text-gray-400">e.g. I, III, V</span>
+                </div>
+                <input
+                  type="text"
+                  list="active-sections-list"
                   value={newSection}
                   onChange={(e) => setNewSection(e.target.value)}
+                  placeholder="Select or type section (e.g. I, III, V)"
                   className="input"
-                >
-                  <option value="">— No Section —</option>
-                  {getAllSections().map((sec) => (
-                    <option key={sec} value={sec}>
-                      {sec}
-                    </option>
+                />
+                <datalist id="active-sections-list">
+                  {sections.map((sec) => (
+                    <option key={sec} value={sec} />
                   ))}
-                </select>
+                  <option value="I" />
+                  <option value="III" />
+                  <option value="V" />
+                  {getAllSections().map((sec) => (
+                    <option key={sec} value={sec} />
+                  ))}
+                </datalist>
+
+                {/* Quick select pills */}
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-semibold text-gray-500">Quick pick:</span>
+                  {(sections.length > 0 ? sections : ['I', 'III', 'V']).map((sec) => (
+                    <button
+                      key={sec}
+                      type="button"
+                      onClick={() => setNewSection(sec)}
+                      className={`rounded-md px-2 py-0.5 text-xs font-semibold transition-all ${
+                        newSection === sec
+                          ? 'bg-brand-700 text-white shadow-2xs'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      {sec}
+                    </button>
+                  ))}
+                  {newSection && (
+                    <button
+                      type="button"
+                      onClick={() => setNewSection('')}
+                      className="text-[11px] text-gray-400 hover:text-gray-600 underline ml-1"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowAddModal(false)}
+                  onClick={() => {
+                    setShowAddModal(false);
+                    setEditingStudent(null);
+                  }}
                   className="btn-secondary"
                   disabled={submitting}
                 >
@@ -809,10 +920,15 @@ export default function RosterPage() {
                       <Loader2 className="h-4 w-4 animate-spin" />
                       Saving...
                     </>
+                  ) : editingStudent ? (
+                    <>
+                      <Pencil className="h-4 w-4" />
+                      Save Changes
+                    </>
                   ) : (
                     <>
                       <Plus className="h-4 w-4" />
-                      Add Student
+                      Enroll Student
                     </>
                   )}
                 </button>
