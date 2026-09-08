@@ -12,7 +12,6 @@ import {
   BarChart3,
   Calendar,
   UserSearch,
-  History,
   X,
   CheckCircle,
   Clock,
@@ -21,17 +20,31 @@ import {
   PieChart,
   CheckCircle2,
   Wrench,
+  ShieldCheck,
+  GraduationCap,
+  Check,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { createBrowserClient } from '@/lib/supabase';
 import { LabSession, Student } from '@/lib/types';
+import { normalizeAcademicSection, isHardwareDefectRemark } from '@/lib/constants';
+
+interface ResolvedSystemRecord {
+  system_no: string;
+  resolved_at: string;
+  resolution_notes?: string;
+  resolved_by?: string;
+}
 
 interface FlaggedSystem {
   system_no: string;
-  session_count?: number;
-  incident_count?: number;
-  sessions?: { session_id?: string; session_date?: string; remark?: string }[];
-  remarks?: string[];
+  session_count: number;
+  incident_count: number;
+  sessions: { session_id?: string; session_date?: string; section?: string; remark?: string }[];
+  remarks: string[];
+  is_resolved?: boolean;
+  resolved_at?: string;
+  resolution_notes?: string;
 }
 
 interface StudentHistoryEntry {
@@ -48,13 +61,34 @@ interface SessionWithCounts extends LabSession {
   entry_count?: number;
 }
 
+const STORAGE_KEY = 'vimtech_resolved_systems_v1';
+
+function getLocalResolvedSystems(): Record<string, ResolvedSystemRecord> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLocalResolvedSystems(records: Record<string, ResolvedSystemRecord>) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+  } catch {}
+}
+
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<'overview' | 'analytics' | 'systems' | 'students'>('overview');
 
   // Overview stats
   const [totalSessions, setTotalSessions] = useState(0);
-  const [totalStudents, setTotalStudents] = useState(0);
   const [confirmedSessions, setConfirmedSessions] = useState(0);
+  const [enrolledStudents, setEnrolledStudents] = useState(0);
+  const [totalAttendances, setTotalAttendances] = useState(0);
+  const [avgAttendance, setAvgAttendance] = useState(0);
   const [countMismatches, setCountMismatches] = useState<SessionWithCounts[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -82,13 +116,24 @@ export default function DashboardPage() {
   }[]>([]);
   const [sectionTurnout, setSectionTurnout] = useState<{
     section: string;
+    degree: string;
+    semester: string | null;
+    year: string | null;
     sessionsCount: number;
     totalAttendance: number;
+    avgAttendance: number;
+    badgeLabel: string;
+    badgeVariant: 'purple' | 'blue' | 'emerald' | 'amber' | 'gray';
   }[]>([]);
+  const [academicProgramFilter, setAcademicProgramFilter] = useState<'ALL' | 'BCA' | 'PUC' | 'SPECIAL'>('ALL');
 
-  // Flagged systems
+  // Flagged systems & Resolution state
   const [flaggedSystems, setFlaggedSystems] = useState<FlaggedSystem[]>([]);
-  const [loadingSystems, setLoadingSystems] = useState(false);
+  const [resolvedMap, setResolvedMap] = useState<Record<string, ResolvedSystemRecord>>({});
+  const [systemsFilter, setSystemsFilter] = useState<'active' | 'resolved' | 'all'>('active');
+  const [systemToResolve, setSystemToResolve] = useState<FlaggedSystem | null>(null);
+  const [resolutionNotes, setResolutionNotes] = useState('');
+  const [resolvingLoading, setResolvingLoading] = useState(false);
 
   // Student history
   const [studentSearch, setStudentSearch] = useState('');
@@ -113,9 +158,10 @@ export default function DashboardPage() {
   const loadOverview = async () => {
     const supabase = createBrowserClient();
 
-    const [sessionsRes, entriesRes] = await Promise.all([
+    const [sessionsRes, entriesRes, studentsCountRes] = await Promise.all([
       supabase.from('lab_sessions').select('*').order('session_date', { ascending: false }),
-      supabase.from('lab_entries').select('session_id, raw_ucms_ocr, raw_name_ocr, signature_present, remarks'),
+      supabase.from('lab_entries').select('session_id, system_no, raw_ucms_ocr, raw_name_ocr, signature_present, remarks, created_at'),
+      supabase.from('students').select('id', { count: 'exact', head: true }),
     ]);
 
     const allSessions = sessionsRes.data || [];
@@ -124,16 +170,24 @@ export default function DashboardPage() {
     setConfirmedSessions(allSessions.filter((s) => s.faculty_confirmed).length);
 
     const entryRows = entriesRes.data || [];
+    setTotalAttendances(entryRows.length);
+    setAvgAttendance(allSessions.length > 0 ? Math.round(entryRows.length / allSessions.length) : 0);
 
-    // Unique students recorded from physical ledger entries
-    const uniqueKeys = new Set(
-      entryRows
-        .map((e) => (e.raw_ucms_ocr || e.raw_name_ocr || '').trim().toLowerCase())
-        .filter(Boolean)
-    );
-    setTotalStudents(uniqueKeys.size);
+    // Official enrolled student count from roster (fallback to 60 if null or 0)
+    const rosterCount = studentsCountRes.count;
+    setEnrolledStudents(rosterCount && rosterCount > 0 ? rosterCount : 60);
 
-    // Compute counts, hardware categories, signature stats & occupancy from single query
+    // Load local resolved records
+    const localResolved = getLocalResolvedSystems();
+    setResolvedMap(localResolved);
+
+    // Map sessions by ID
+    const sessionLookup = new Map<string, LabSession>();
+    for (const s of allSessions) {
+      sessionLookup.set(s.id, s);
+    }
+
+    // Build counts, hardware categories & smart defect detection
     try {
       const countMap = new Map<string, number>();
       let mouseCount = 0;
@@ -142,6 +196,14 @@ export default function DashboardPage() {
       let otherCount = 0;
       let signedCount = 0;
       let unsignedCount = 0;
+
+      const systemIncidentsMap = new Map<
+        string,
+        {
+          sessions: { session_id?: string; session_date?: string; section?: string; remark?: string }[];
+          remarks: string[];
+        }
+      >();
 
       for (const row of entryRows) {
         if (row.session_id) {
@@ -154,16 +216,33 @@ export default function DashboardPage() {
           unsignedCount++;
         }
 
-        const rem = (row.remarks || '').trim().toLowerCase();
-        if (rem) {
-          if (rem.includes('mouse') || rem.includes('scroll') || rem.includes('cursor')) {
+        const sysNo = (row.system_no || '').trim();
+        const rem = (row.remarks || '').trim();
+
+        // Only process legitimate hardware defects (filter out student names)
+        if (rem && isHardwareDefectRemark(rem)) {
+          const remLower = rem.toLowerCase();
+          if (remLower.includes('mouse') || remLower.includes('scroll') || remLower.includes('cursor') || remLower.includes('click')) {
             mouseCount++;
-          } else if (rem.includes('keyboard') || rem.includes('key') || rem.includes('space')) {
+          } else if (remLower.includes('keyboard') || remLower.includes('key') || remLower.includes('space')) {
             keyboardCount++;
-          } else if (rem.includes('monitor') || rem.includes('screen') || rem.includes('display')) {
+          } else if (remLower.includes('monitor') || remLower.includes('screen') || remLower.includes('display') || remLower.includes('flicker')) {
             displayCount++;
           } else {
             otherCount++;
+          }
+
+          if (sysNo) {
+            const sess = row.session_id ? sessionLookup.get(row.session_id) : undefined;
+            const existing = systemIncidentsMap.get(sysNo) || { sessions: [], remarks: [] };
+            existing.remarks.push(rem);
+            existing.sessions.push({
+              session_id: row.session_id,
+              session_date: sess?.session_date || 'N/A',
+              section: sess?.section || 'General',
+              remark: rem,
+            });
+            systemIncidentsMap.set(sysNo, existing);
           }
         }
       }
@@ -208,10 +287,11 @@ export default function DashboardPage() {
           shortDate = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
         } catch {}
 
+        const academic = normalizeAcademicSection(s.section, s.class_name);
         return {
           id: s.id,
           label: shortDate,
-          section: s.section || 'General',
+          section: academic.badgeLabel,
           occupied,
           capacity,
           pct,
@@ -219,47 +299,144 @@ export default function DashboardPage() {
       });
       setOccupancyData(occupancy);
 
-      // Section turnout aggregation
-      const sectionMap = new Map<string, { count: number; attendees: number }>();
+      // Section turnout aggregation structured by academic program
+      const academicSectionMap = new Map<string, { count: number; attendees: number; sampleClass: string | null }>();
       for (const s of allSessions) {
-        const sec = s.section || 'Unassigned';
+        const academic = normalizeAcademicSection(s.section, s.class_name);
+        const key = academic.section;
         const attendees = countMap.get(s.id) || s.total_system_count || 0;
-        const existing = sectionMap.get(sec) || { count: 0, attendees: 0 };
-        sectionMap.set(sec, {
+        const existing = academicSectionMap.get(key) || { count: 0, attendees: 0, sampleClass: s.class_name };
+        academicSectionMap.set(key, {
           count: existing.count + 1,
           attendees: existing.attendees + attendees,
+          sampleClass: existing.sampleClass || s.class_name,
         });
       }
 
-      const turnout = Array.from(sectionMap.entries()).map(([section, data]) => ({
-        section,
-        sessionsCount: data.count,
-        totalAttendance: data.attendees,
-      }));
+      const turnout = Array.from(academicSectionMap.entries()).map(([section, data]) => {
+        const academic = normalizeAcademicSection(section, data.sampleClass);
+        return {
+          section,
+          degree: academic.degree,
+          semester: academic.semester,
+          year: academic.year,
+          sessionsCount: data.count,
+          totalAttendance: data.attendees,
+          avgAttendance: data.count > 0 ? Math.round(data.attendees / data.count) : 0,
+          badgeLabel: academic.badgeLabel,
+          badgeVariant: academic.badgeVariant,
+        };
+      });
+
+      // Sort turnout by Degree, Year, and Semester
+      turnout.sort((a, b) => {
+        if (a.degree !== b.degree) return a.degree.localeCompare(b.degree);
+        if (a.year !== b.year) return (a.year || '').localeCompare(b.year || '');
+        return (a.semester || '').localeCompare(b.semester || '');
+      });
       setSectionTurnout(turnout);
+
+      // Build flagged systems list
+      const allSystemNos = new Set<string>([
+        ...Array.from(systemIncidentsMap.keys()),
+        ...Object.keys(localResolved),
+      ]);
+
+      const builtFlaggedSystems: FlaggedSystem[] = [];
+      for (const sysNo of allSystemNos) {
+        const data = systemIncidentsMap.get(sysNo) || { sessions: [], remarks: [] };
+        const res = localResolved[sysNo];
+        const isResolved = !!res;
+
+        builtFlaggedSystems.push({
+          system_no: sysNo,
+          session_count: data.sessions.length,
+          incident_count: data.remarks.length,
+          sessions: data.sessions,
+          remarks: data.remarks.length > 0 ? data.remarks : [res?.resolution_notes || 'Resolved issue'],
+          is_resolved: isResolved,
+          resolved_at: res?.resolved_at,
+          resolution_notes: res?.resolution_notes,
+        });
+      }
+
+      builtFlaggedSystems.sort((a, b) => {
+        if (a.is_resolved !== b.is_resolved) {
+          return a.is_resolved ? 1 : -1;
+        }
+        return b.incident_count - a.incident_count;
+      });
+
+      setFlaggedSystems(builtFlaggedSystems);
     } catch {
       setCountMismatches([]);
     }
 
-    try {
-      const { data: flaggedData } = await supabase.rpc('flagged_systems');
-      if (flaggedData) setFlaggedSystems(flaggedData);
-    } catch {
-      // Non-fatal
-    }
     setLoading(false);
   };
 
-  const loadFlaggedSystems = async () => {
-    setLoadingSystems(true);
-    const supabase = createBrowserClient();
-    const { data, error } = await supabase.rpc('flagged_systems');
-    if (error) {
-      toast.error('Failed to load flagged systems');
-    } else {
-      setFlaggedSystems(data || []);
+  const handleConfirmSolve = async () => {
+    if (!systemToResolve) return;
+    setResolvingLoading(true);
+    const updated = { ...resolvedMap };
+    const note = resolutionNotes.trim() || 'Hardware inspected and verified operational';
+    updated[systemToResolve.system_no] = {
+      system_no: systemToResolve.system_no,
+      resolved_at: new Date().toISOString(),
+      resolution_notes: note,
+      resolved_by: 'Faculty / Lab In-Charge',
+    };
+    saveLocalResolvedSystems(updated);
+    setResolvedMap(updated);
+
+    // Optional background sync to Supabase table
+    try {
+      const supabase = createBrowserClient();
+      await supabase.from('system_maintenance').insert({
+        system_no: systemToResolve.system_no,
+        issue_description: systemToResolve.remarks.join('; '),
+        status: 'resolved',
+        resolved_at: new Date().toISOString(),
+        resolved_by: 'Faculty / Admin',
+        resolution_notes: note,
+      });
+    } catch {
+      // Graceful fallback
     }
-    setLoadingSystems(false);
+
+    const solvedSysNo = systemToResolve.system_no;
+    setSystemToResolve(null);
+    setResolutionNotes('');
+    setResolvingLoading(false);
+    toast.success(`System #${solvedSysNo} marked as solved!`);
+    loadOverview();
+  };
+
+  const handleReopenSystem = (systemNo: string) => {
+    const updated = { ...resolvedMap };
+    delete updated[systemNo];
+    saveLocalResolvedSystems(updated);
+    setResolvedMap(updated);
+    toast.info(`System #${systemNo} reopened and marked active`);
+    loadOverview();
+  };
+
+  const handleDismissFlag = (systemNo: string) => {
+    const updated = { ...resolvedMap };
+    updated[systemNo] = {
+      system_no: systemNo,
+      resolved_at: new Date().toISOString(),
+      resolution_notes: 'Dismissed (non-hardware remark)',
+      resolved_by: 'Faculty / Admin',
+    };
+    saveLocalResolvedSystems(updated);
+    setResolvedMap(updated);
+    toast.success(`System #${systemNo} flag dismissed`);
+    loadOverview();
+  };
+
+  const loadFlaggedSystems = async () => {
+    await loadOverview();
   };
 
   const searchStudentsForHistory = async (query: string) => {
@@ -385,6 +562,7 @@ export default function DashboardPage() {
           ) : (
             <>
               <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-5">
+                {/* 1. Total Sessions */}
                 <div className="card p-3.5">
                   <div className="flex items-center gap-2.5">
                     <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-brand-50">
@@ -393,53 +571,76 @@ export default function DashboardPage() {
                     <div>
                       <p className="text-xl font-bold text-gray-900 leading-tight">{totalSessions}</p>
                       <p className="text-[11px] text-gray-500">Total Sessions</p>
+                      <p className="text-[10px] text-brand-700 font-medium">{confirmedSessions} confirmed</p>
                     </div>
                   </div>
                 </div>
-                <div className="card">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-green-50">
-                      <History className="h-5 w-5 text-green-700" />
+
+                {/* 2. Enrolled Students in Official Roster */}
+                <div className="card p-3.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-blue-50">
+                      <GraduationCap className="h-4 w-4 text-blue-700" />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">{confirmedSessions}</p>
-                      <p className="text-xs text-gray-500">Confirmed</p>
+                      <p className="text-xl font-bold text-gray-900 leading-tight">{enrolledStudents}</p>
+                      <p className="text-[11px] text-gray-500">Enrolled Students</p>
+                      <p className="text-[10px] text-blue-600 font-medium">BCA &amp; PUC Roster</p>
                     </div>
                   </div>
                 </div>
-                <div className="card">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-50">
-                      <Users className="h-5 w-5 text-blue-700" />
+
+                {/* 3. Total Attendances Logged */}
+                <div className="card p-3.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-emerald-50">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-700" />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">{totalStudents}</p>
-                      <p className="text-xs text-gray-500">Students Recorded</p>
+                      <p className="text-xl font-bold text-gray-900 leading-tight">{totalAttendances}</p>
+                      <p className="text-[11px] text-gray-500">Total Attendances</p>
+                      <p className="text-[10px] text-emerald-700 font-medium">~{avgAttendance} avg / session</p>
                     </div>
                   </div>
                 </div>
-                <div className="card">
-                  <div className="flex items-center gap-3">
-                    <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${countMismatches.length > 0 ? 'bg-red-50' : 'bg-green-50'}`}>
-                      <AlertTriangle className={`h-5 w-5 ${countMismatches.length > 0 ? 'text-red-700' : 'text-green-700'}`} />
+
+                {/* 4. Count Mismatches */}
+                <div className="card p-3.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${countMismatches.length > 0 ? 'bg-rose-50' : 'bg-green-50'}`}>
+                      <AlertTriangle className={`h-4 w-4 ${countMismatches.length > 0 ? 'text-rose-700' : 'text-green-700'}`} />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">{countMismatches.length}</p>
-                      <p className="text-xs text-gray-500">Count Mismatches</p>
+                      <p className="text-xl font-bold text-gray-900 leading-tight">{countMismatches.length}</p>
+                      <p className="text-[11px] text-gray-500">Audit Discrepancies</p>
+                      <p className={`text-[10px] font-medium ${countMismatches.length > 0 ? 'text-rose-600' : 'text-green-700'}`}>
+                        {countMismatches.length > 0 ? 'Header vs Row count' : 'All matched'}
+                      </p>
                     </div>
                   </div>
                 </div>
+
+                {/* 5. Lab Hardware Status */}
                 <div
                   onClick={() => setActiveTab('systems')}
-                  className="card cursor-pointer transition-shadow hover:shadow-md"
+                  className="card p-3.5 cursor-pointer transition-all hover:border-amber-300 hover:shadow-xs"
                 >
-                  <div className="flex items-center gap-3">
-                    <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${flaggedSystems.length > 0 ? 'bg-amber-50' : 'bg-gray-50'}`}>
-                      <Monitor className={`h-5 w-5 ${flaggedSystems.length > 0 ? 'text-amber-700' : 'text-gray-500'}`} />
+                  <div className="flex items-center gap-2.5">
+                    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
+                      flaggedSystems.filter((s) => !s.is_resolved).length > 0 ? 'bg-amber-50' : 'bg-emerald-50'
+                    }`}>
+                      <Monitor className={`h-4 w-4 ${
+                        flaggedSystems.filter((s) => !s.is_resolved).length > 0 ? 'text-amber-700' : 'text-emerald-700'
+                      }`} />
                     </div>
                     <div>
-                      <p className="text-2xl font-bold text-gray-900">{flaggedSystems.length}</p>
-                      <p className="text-xs text-gray-500">Flagged Systems</p>
+                      <p className="text-xl font-bold text-gray-900 leading-tight">
+                        {flaggedSystems.filter((s) => !s.is_resolved).length}
+                      </p>
+                      <p className="text-[11px] text-gray-500">Active Lab Defects</p>
+                      <p className="text-[10px] text-amber-700 font-medium">
+                        {flaggedSystems.filter((s) => s.is_resolved).length} resolved
+                      </p>
                     </div>
                   </div>
                 </div>
@@ -486,39 +687,52 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              {/* Flagged Systems Widget */}
+              {/* Flagged Systems Overview Widget */}
               {flaggedSystems.length > 0 && (
                 <div className="card">
                   <div className="flex items-center justify-between">
                     <h3 className="flex items-center gap-2 text-sm font-semibold text-amber-800">
-                      <Monitor className="h-4 w-4 text-amber-600" />
-                      Recurring System Issues (Damage & Incidents)
+                      <Wrench className="h-4 w-4 text-amber-600" />
+                      Hardware Maintenance &amp; Defect Tracking
                     </h3>
                     <button
                       onClick={() => setActiveTab('systems')}
-                      className="text-xs font-medium text-brand-700 hover:underline"
+                      className="text-xs font-semibold text-brand-700 hover:underline"
                     >
-                      View All Details →
+                      Manage Systems →
                     </button>
                   </div>
                   <p className="mt-1 text-xs text-gray-500">
-                    Machines with remarks across 2+ sessions — may need maintenance or hardware checks
+                    Verified machine issues (mouse, keyboard, display, power) extracted from student remarks
                   </p>
                   <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {flaggedSystems.slice(0, 6).map((sys) => {
                       const count = sys.incident_count ?? sys.session_count ?? (sys.remarks?.length || 0);
-                      const latestRemark = sys.sessions?.[0]?.remark ?? sys.remarks?.[0] ?? 'Recurring issue';
+                      const latestRemark = sys.sessions?.[0]?.remark ?? sys.remarks?.[0] ?? 'Recurring defect';
                       return (
                         <div
                           key={sys.system_no}
                           onClick={() => setActiveTab('systems')}
-                          className="flex cursor-pointer items-center justify-between rounded-lg border border-amber-100 bg-amber-50/40 p-3 transition-colors hover:bg-amber-50"
+                          className={`flex cursor-pointer items-center justify-between rounded-xl border p-3 transition-colors ${
+                            sys.is_resolved
+                              ? 'border-emerald-100 bg-emerald-50/40 hover:bg-emerald-50'
+                              : 'border-amber-200 bg-amber-50/50 hover:bg-amber-100/60'
+                          }`}
                         >
                           <div>
-                            <p className="text-sm font-semibold text-gray-900">System #{sys.system_no}</p>
-                            <p className="text-xs text-gray-500 truncate max-w-[180px]">{latestRemark}</p>
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-bold text-gray-900">PC #{sys.system_no}</p>
+                              {sys.is_resolved && (
+                                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold text-emerald-800">
+                                  Solved
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-600 truncate max-w-[180px]">{latestRemark}</p>
                           </div>
-                          <span className="badge-warning">{count} flags</span>
+                          <span className={sys.is_resolved ? 'badge-success text-[10px]' : 'badge-warning text-[10px]'}>
+                            {sys.is_resolved ? 'Operational' : `${count} flag${count !== 1 ? 's' : ''}`}
+                          </span>
                         </div>
                       );
                     })}
@@ -554,58 +768,70 @@ export default function DashboardPage() {
                   </div>
                 ) : (
                   <div className="mt-4 divide-y divide-gray-100 overflow-hidden rounded-lg border border-gray-100">
-                    {sessions.slice(0, 10).map((session) => (
-                      <Link
-                        key={session.id}
-                        href={`/sessions/${session.id}`}
-                        className="flex items-center justify-between p-3.5 transition-colors hover:bg-gray-50/80"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div
-                            className={`flex h-9 w-9 items-center justify-center rounded-lg ${
-                              session.faculty_confirmed ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'
-                            }`}
-                          >
-                            {session.faculty_confirmed ? (
-                              <CheckCircle className="h-5 w-5" />
-                            ) : (
-                              <Clock className="h-5 w-5" />
-                            )}
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-semibold text-sm text-gray-900">
-                                {new Date(session.session_date + 'T00:00:00').toLocaleDateString('en-IN', {
-                                  weekday: 'short',
-                                  month: 'short',
-                                  day: 'numeric',
-                                  year: 'numeric',
-                                })}
-                              </span>
-                              {session.section && (
-                                <span className="badge-info text-[10px]">
-                                  Sec {session.section}
-                                </span>
-                              )}
+                    {sessions.slice(0, 10).map((session) => {
+                      const academic = normalizeAcademicSection(session.section, session.class_name);
+                      return (
+                        <Link
+                          key={session.id}
+                          href={`/sessions/${session.id}`}
+                          className="flex items-center justify-between p-3.5 transition-colors hover:bg-gray-50/80"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div
+                              className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                                session.faculty_confirmed ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'
+                              }`}
+                            >
                               {session.faculty_confirmed ? (
-                                <span className="badge-success text-[10px]">Confirmed</span>
+                                <CheckCircle className="h-5 w-5" />
                               ) : (
-                                <span className="badge-warning text-[10px]">Draft (Needs Review)</span>
+                                <Clock className="h-5 w-5" />
                               )}
                             </div>
-                            <div className="mt-0.5 flex gap-3 text-xs text-gray-500">
-                              {session.class_name && <span>Class: {session.class_name}</span>}
-                              {session.faculty_name && <span>Faculty: {session.faculty_name}</span>}
-                              <span>{session.total_system_count ?? '—'} systems logged</span>
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-sm text-gray-900">
+                                  {new Date(session.session_date + 'T00:00:00').toLocaleDateString('en-IN', {
+                                    weekday: 'short',
+                                    month: 'short',
+                                    day: 'numeric',
+                                    year: 'numeric',
+                                  })}
+                                </span>
+                                <span
+                                  className={`rounded-md px-2 py-0.5 text-[11px] font-bold border ${
+                                    academic.badgeVariant === 'purple'
+                                      ? 'bg-purple-50 text-purple-800 border-purple-200'
+                                      : academic.badgeVariant === 'blue'
+                                      ? 'bg-blue-50 text-blue-800 border-blue-200'
+                                      : academic.badgeVariant === 'emerald'
+                                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                      : academic.badgeVariant === 'amber'
+                                      ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                      : 'bg-gray-50 text-gray-700 border-gray-200'
+                                  }`}
+                                >
+                                  {academic.badgeLabel}
+                                </span>
+                                {session.faculty_confirmed ? (
+                                  <span className="badge-success text-[10px]">Confirmed</span>
+                                ) : (
+                                  <span className="badge-warning text-[10px]">Draft (Needs Review)</span>
+                                )}
+                              </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-gray-500">
+                                {session.faculty_name && <span>Faculty: {session.faculty_name}</span>}
+                                <span>{session.total_system_count ?? '—'} systems logged</span>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-medium text-brand-700">Open →</span>
-                          <ChevronRight className="h-4 w-4 text-gray-400" />
-                        </div>
-                      </Link>
-                    ))}
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-medium text-brand-700">Open →</span>
+                            <ChevronRight className="h-4 w-4 text-gray-400" />
+                          </div>
+                        </Link>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -914,44 +1140,113 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Chart Row 3: Section Distribution & Lab Turnout */}
-          <div className="card">
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-              <PieChart className="h-4 w-4 text-purple-600" />
-              Section Turnout &amp; Lab Sessions Conducted
-            </h3>
-            <p className="mt-0.5 text-xs text-gray-500">
-              Total sessions and student attendance recorded by class section
-            </p>
+          {/* Chart Row 3: Academic Program & Section Turnout Breakdown */}
+          <div className="card space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                  <PieChart className="h-4 w-4 text-purple-600" />
+                  Academic Turnout by Program &amp; Semester
+                </h3>
+                <p className="mt-0.5 text-xs text-gray-500">
+                  Standardized attendance volume and average lab capacity utilization by class section
+                </p>
+              </div>
+
+              {/* Program Segmented Selector */}
+              <div className="flex rounded-xl bg-gray-100 p-1 text-xs font-semibold">
+                {(['ALL', 'BCA', 'PUC', 'SPECIAL'] as const).map((prog) => (
+                  <button
+                    key={prog}
+                    onClick={() => setAcademicProgramFilter(prog)}
+                    className={`rounded-lg px-2.5 py-1 transition-all ${
+                      academicProgramFilter === prog
+                        ? 'bg-white text-brand-700 shadow-2xs font-bold'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    {prog === 'ALL' ? 'All Programs' : prog === 'SPECIAL' ? 'Workshops' : prog}
+                  </button>
+                ))}
+              </div>
+            </div>
 
             {sectionTurnout.length === 0 ? (
-              <p className="mt-4 text-center text-xs text-gray-400 py-6">
-                No section distribution data yet
+              <p className="text-center text-xs text-gray-400 py-8">
+                No section attendance data recorded yet
               </p>
             ) : (
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                {sectionTurnout.map((sec) => (
-                  <div
-                    key={sec.section}
-                    className="rounded-xl border border-gray-100 bg-gray-50/50 p-4 transition-all hover:bg-brand-50/40 hover:border-brand-100"
-                  >
-                    <span className="badge-info text-xs font-semibold">
-                      Section {sec.section}
-                    </span>
-                    <div className="mt-3 flex items-baseline justify-between">
-                      <div>
-                        <p className="text-xl font-bold text-gray-900">{sec.sessionsCount}</p>
-                        <p className="text-[11px] text-gray-500">Sessions Held</p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {sectionTurnout
+                  .filter((sec) => {
+                    if (academicProgramFilter === 'ALL') return true;
+                    if (academicProgramFilter === 'BCA') return sec.degree === 'BCA';
+                    if (academicProgramFilter === 'PUC') return sec.degree === 'PUC';
+                    return sec.degree !== 'BCA' && sec.degree !== 'PUC';
+                  })
+                  .map((sec) => {
+                    const fillRatePct = Math.min(100, Math.round((sec.avgAttendance / 60) * 100));
+                    return (
+                      <div
+                        key={sec.section}
+                        className="rounded-xl border border-gray-200 bg-white p-4 shadow-2xs transition-all hover:border-brand-200 hover:shadow-xs"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <span
+                            className={`rounded-md px-2 py-0.5 text-[11px] font-bold border ${
+                              sec.badgeVariant === 'purple'
+                                ? 'bg-purple-50 text-purple-800 border-purple-200'
+                                : sec.badgeVariant === 'blue'
+                                ? 'bg-blue-50 text-blue-800 border-blue-200'
+                                : sec.badgeVariant === 'emerald'
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : sec.badgeVariant === 'amber'
+                                ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                : 'bg-gray-50 text-gray-700 border-gray-200'
+                            }`}
+                          >
+                            {sec.badgeLabel}
+                          </span>
+                          <span className="text-[11px] font-bold text-gray-500">
+                            {sec.sessionsCount} session{sec.sessionsCount !== 1 ? 's' : ''}
+                          </span>
+                        </div>
+
+                        <div className="mt-3 flex items-baseline justify-between">
+                          <div>
+                            <p className="text-xl font-bold text-gray-900">{sec.totalAttendance}</p>
+                            <p className="text-[11px] text-gray-500">Total Student Attendees</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-base font-semibold text-brand-700">
+                              ~{sec.avgAttendance} <span className="text-xs text-gray-400 font-normal">/ session</span>
+                            </p>
+                            <p className="text-[10px] text-gray-400">Lab Capacity (~60)</p>
+                          </div>
+                        </div>
+
+                        {/* Capacity Fill Bar */}
+                        <div className="mt-3 space-y-1">
+                          <div className="flex justify-between text-[10px] font-medium text-gray-500">
+                            <span>Avg Lab Occupancy</span>
+                            <span className="font-semibold text-gray-700">{fillRatePct}%</span>
+                          </div>
+                          <div className="h-2 w-full rounded-full bg-gray-100 overflow-hidden">
+                            <div
+                              style={{ width: `${fillRatePct}%` }}
+                              className={`h-full rounded-full transition-all ${
+                                fillRatePct >= 80
+                                  ? 'bg-emerald-500'
+                                  : fillRatePct >= 50
+                                  ? 'bg-blue-500'
+                                  : 'bg-amber-500'
+                              }`}
+                            />
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <p className="text-base font-semibold text-brand-700">
-                          {sec.totalAttendance}
-                        </p>
-                        <p className="text-[11px] text-gray-500">Total Attendees</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                    );
+                  })}
               </div>
             )}
           </div>
@@ -960,70 +1255,207 @@ export default function DashboardPage() {
 
       {/* Flagged Systems Tab */}
       {activeTab === 'systems' && (
-        <div className="mt-6">
-          {loadingSystems ? (
+        <div className="mt-6 space-y-4">
+          {/* Header & Sub-filters */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">Lab Hardware &amp; System Defect Tracking</h2>
+              <p className="text-xs text-gray-500">
+                Extracted machine defect remarks with resolution notes and operational status
+              </p>
+            </div>
+
+            {/* Active / Resolved Filter Tabs */}
+            <div className="flex rounded-xl bg-gray-200/80 p-1 text-xs font-semibold">
+              <button
+                onClick={() => setSystemsFilter('active')}
+                className={`rounded-lg px-3 py-1.5 transition-all ${
+                  systemsFilter === 'active'
+                    ? 'bg-white text-amber-800 shadow-2xs font-bold'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Active Issues ({flaggedSystems.filter((s) => !s.is_resolved).length})
+              </button>
+              <button
+                onClick={() => setSystemsFilter('resolved')}
+                className={`rounded-lg px-3 py-1.5 transition-all ${
+                  systemsFilter === 'resolved'
+                    ? 'bg-white text-emerald-800 shadow-2xs font-bold'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Resolved ({flaggedSystems.filter((s) => s.is_resolved).length})
+              </button>
+              <button
+                onClick={() => setSystemsFilter('all')}
+                className={`rounded-lg px-3 py-1.5 transition-all ${
+                  systemsFilter === 'all'
+                    ? 'bg-white text-brand-700 shadow-2xs font-bold'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                All ({flaggedSystems.length})
+              </button>
+            </div>
+          </div>
+
+          {loading ? (
             <div className="flex justify-center py-12">
               <Loader2 className="h-6 w-6 animate-spin text-brand-600" />
             </div>
-          ) : flaggedSystems.length === 0 ? (
+          ) : flaggedSystems.filter((s) => {
+              if (systemsFilter === 'active') return !s.is_resolved;
+              if (systemsFilter === 'resolved') return s.is_resolved;
+              return true;
+            }).length === 0 ? (
             <div className="card text-center py-12">
-              <Monitor className="mx-auto h-10 w-10 text-gray-300" />
-              <p className="mt-3 text-sm text-gray-500">
-                No systems flagged — no system has remarks across 2+ sessions
+              <Monitor className="mx-auto h-10 w-10 text-emerald-400" />
+              <p className="mt-3 text-sm font-semibold text-gray-800">
+                {systemsFilter === 'active'
+                  ? 'All lab systems are operational! No active hardware issues flagged.'
+                  : systemsFilter === 'resolved'
+                  ? 'No systems currently marked as resolved.'
+                  : 'No hardware defects logged across sessions.'}
+              </p>
+              <p className="mt-1 text-xs text-gray-500 max-w-sm mx-auto">
+                Legitimate hardware defects mentioned by students during sessions are automatically grouped here.
               </p>
             </div>
           ) : (
-            <div className="space-y-4">
-              <p className="text-sm text-gray-500">
-                Systems with remarks across 2+ sessions — may need attention
-              </p>
-              {flaggedSystems.map((sys) => {
-                const count = sys.incident_count ?? sys.session_count ?? (sys.remarks?.length || 0);
-                return (
-                  <div key={sys.system_no} className="card">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-50">
-                          <Monitor className="h-5 w-5 text-red-600" />
+            <div className="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-3">
+              {flaggedSystems
+                .filter((s) => {
+                  if (systemsFilter === 'active') return !s.is_resolved;
+                  if (systemsFilter === 'resolved') return s.is_resolved;
+                  return true;
+                })
+                .map((sys) => {
+                  const count = sys.incident_count ?? sys.session_count ?? (sys.remarks?.length || 0);
+                  return (
+                    <div
+                      key={sys.system_no}
+                      className={`card flex flex-col justify-between transition-all ${
+                        sys.is_resolved
+                          ? 'border-emerald-200 bg-emerald-50/20'
+                          : 'border-amber-200 bg-white'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2.5">
+                            <div
+                              className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
+                                sys.is_resolved ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'
+                              }`}
+                            >
+                              <Monitor className="h-5 w-5" />
+                            </div>
+                            <div>
+                              <p className="font-bold text-gray-900 leading-tight">
+                                System #{sys.system_no}
+                              </p>
+                              <p className="text-[11px] text-gray-500">
+                                {count} defect incident{count !== 1 ? 's' : ''} logged
+                              </p>
+                            </div>
+                          </div>
+
+                          <span
+                            className={
+                              sys.is_resolved
+                                ? 'badge-success text-[10px]'
+                                : 'badge-warning text-[10px]'
+                            }
+                          >
+                            {sys.is_resolved ? 'Operational' : 'Needs Repair'}
+                          </span>
                         </div>
-                        <div>
-                          <p className="font-semibold text-gray-900">
-                            System #{sys.system_no}
+
+                        {/* Resolution info if resolved */}
+                        {sys.is_resolved && (
+                          <div className="mt-3 rounded-lg bg-emerald-50 p-2.5 text-xs text-emerald-900 border border-emerald-100">
+                            <div className="flex items-center gap-1.5 font-bold text-emerald-800">
+                              <ShieldCheck className="h-3.5 w-3.5" />
+                              <span>Solved &amp; Verified</span>
+                            </div>
+                            <p className="mt-1 text-[11px] text-emerald-700">
+                              {sys.resolution_notes || 'Hardware verified operational.'}
+                            </p>
+                            {sys.resolved_at && (
+                              <p className="mt-0.5 text-[10px] text-emerald-600">
+                                Logged: {new Date(sys.resolved_at).toLocaleDateString('en-IN')}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Recent Defect Remarks */}
+                        <div className="mt-3 space-y-1.5">
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                            Reported Defects
                           </p>
-                          <p className="text-xs text-gray-500">
-                            Flagged in {count} sessions
-                          </p>
+                          {sys.sessions && sys.sessions.length > 0
+                            ? sys.sessions.map((s, idx) => (
+                                <Link
+                                  key={idx}
+                                  href={s.session_id ? `/sessions/${s.session_id}` : '#'}
+                                  className="flex items-center justify-between rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs transition-colors hover:bg-gray-100"
+                                >
+                                  <span className="font-semibold text-gray-700">{s.session_date}</span>
+                                  <span className="text-amber-800 font-medium truncate max-w-[150px]">
+                                    {s.remark}
+                                  </span>
+                                </Link>
+                              ))
+                            : sys.remarks && sys.remarks.length > 0
+                            ? sys.remarks.map((r, idx) => (
+                                <div
+                                  key={idx}
+                                  className="flex items-center justify-between rounded-lg bg-gray-50 px-2.5 py-1.5 text-xs"
+                                >
+                                  <span className="font-medium text-gray-600">Incident #{idx + 1}</span>
+                                  <span className="text-amber-800 font-medium truncate max-w-[150px]">{r}</span>
+                                </div>
+                              ))
+                            : null}
                         </div>
                       </div>
-                      <span className="badge-danger">{count} incidents</span>
-                    </div>
-                    <div className="mt-3 space-y-1">
-                      {sys.sessions && sys.sessions.length > 0
-                        ? sys.sessions.map((s, idx) => (
-                            <Link
-                              key={idx}
-                              href={s.session_id ? `/sessions/${s.session_id}` : '#'}
-                              className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs transition-colors hover:bg-gray-100"
+
+                      {/* Action buttons */}
+                      <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-end gap-2">
+                        {sys.is_resolved ? (
+                          <button
+                            onClick={() => handleReopenSystem(sys.system_no)}
+                            className="btn-secondary text-xs py-1 px-2.5 text-gray-600 hover:text-gray-900"
+                          >
+                            Reopen Issue
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => handleDismissFlag(sys.system_no)}
+                              className="text-xs text-gray-400 hover:text-gray-700 px-2 py-1"
+                              title="Dismiss if not a real hardware defect"
                             >
-                              <span className="font-medium text-gray-700">{s.session_date || 'Session'}</span>
-                              <span className="text-gray-500">{s.remark}</span>
-                            </Link>
-                          ))
-                        : sys.remarks && sys.remarks.length > 0
-                        ? sys.remarks.map((r, idx) => (
-                            <div
-                              key={idx}
-                              className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs"
+                              Dismiss
+                            </button>
+                            <button
+                              onClick={() => {
+                                setSystemToResolve(sys);
+                                setResolutionNotes('');
+                              }}
+                              className="btn-primary text-xs py-1.5 px-3 flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white"
                             >
-                              <span className="font-medium text-gray-700">Incident #{idx + 1}</span>
-                              <span className="text-gray-500">{r}</span>
-                            </div>
-                          ))
-                        : null}
+                              <Check className="h-3.5 w-3.5" />
+                              Mark as Solved
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
           )}
         </div>
@@ -1164,7 +1596,101 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* Mark as Solved Modal Dialog */}
+      {systemToResolve && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-gray-100">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-100 text-emerald-700">
+                  <ShieldCheck className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-900">
+                    Mark System #{systemToResolve.system_no} as Solved
+                  </h3>
+                  <p className="text-xs text-gray-500">
+                    Document maintenance action taken and mark operational
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSystemToResolve(null)}
+                className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
 
+            <div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs text-amber-900 border border-amber-200/60">
+              <p className="font-bold text-amber-800">Reported Defects / Remarks:</p>
+              <ul className="mt-1 list-disc list-inside text-amber-700 space-y-0.5">
+                {systemToResolve.remarks.slice(0, 3).map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="mt-4 space-y-1.5">
+              <label className="block text-xs font-semibold text-gray-700">
+                Resolution Notes / Action Taken
+              </label>
+              <textarea
+                rows={3}
+                value={resolutionNotes}
+                onChange={(e) => setResolutionNotes(e.target.value)}
+                placeholder="e.g. Replaced mouse with new optical unit; tested and verified operational."
+                className="input w-full resize-none py-2 text-xs"
+              />
+            </div>
+
+            {/* Quick resolution chips */}
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {[
+                'Replaced mouse with new unit',
+                'Replaced keyboard',
+                'Screen/HDMI cable fixed',
+                'RAM reseated & tested',
+                'Software/OS fixed',
+                'Inspected & operational',
+              ].map((chip) => (
+                <button
+                  key={chip}
+                  type="button"
+                  onClick={() => setResolutionNotes(chip)}
+                  className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-medium text-gray-700 hover:bg-emerald-50 hover:border-emerald-300 hover:text-emerald-800 transition-colors"
+                >
+                  + {chip}
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setSystemToResolve(null)}
+                className="btn-secondary text-xs py-2 px-3.5"
+                disabled={resolvingLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSolve}
+                disabled={resolvingLoading}
+                className="btn-primary flex items-center gap-1.5 text-xs py-2 px-4 bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
+              >
+                {resolvingLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Check className="h-4 w-4" />
+                )}
+                <span>Confirm &amp; Solve</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

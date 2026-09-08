@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { createBrowserClient } from '@/lib/supabase';
 import { LabSession } from '@/lib/types';
+import { normalizeAcademicSection, ACADEMIC_SECTION_GROUPS } from '@/lib/constants';
 
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<LabSession[]>([]);
@@ -53,11 +54,6 @@ export default function SessionsPage() {
     }
   };
 
-  const sections = useMemo(() => {
-    return Array.from(
-      new Set(sessions.map((s) => s.section).filter(Boolean) as string[])
-    ).sort();
-  }, [sessions]);
 
   const filteredSessions = useMemo(() => {
     return sessions.filter((s) => {
@@ -66,7 +62,15 @@ export default function SessionsPage() {
       if (statusFilter === 'confirmed' && !s.faculty_confirmed) return false;
 
       // Section filter
-      if (sectionFilter !== 'all' && s.section !== sectionFilter) return false;
+      if (sectionFilter !== 'all') {
+        const academic = normalizeAcademicSection(s.section, s.class_name);
+        const matches =
+          s.section === sectionFilter ||
+          academic.section === sectionFilter ||
+          academic.degree === sectionFilter ||
+          (s.section || '').toLowerCase() === sectionFilter.toLowerCase();
+        if (!matches) return false;
+      }
 
       // Search query
       if (search.trim()) {
@@ -171,25 +175,25 @@ export default function SessionsPage() {
           ✓ Confirmed ({confirmedCount})
         </button>
 
-        {/* Section divider & pills */}
-        {sections.length > 0 && (
-          <>
-            <span className="w-px h-6 bg-gray-200 shrink-0 self-center mx-1" />
-            {sections.map((sec) => (
-              <button
-                key={sec}
-                onClick={() => setSectionFilter(sectionFilter === sec ? 'all' : sec)}
-                className={`rounded-xl px-3 py-1.5 font-semibold shrink-0 transition-all ${
-                  sectionFilter === sec
-                    ? 'bg-brand-700 text-white shadow-2xs'
-                    : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                Sec {sec}
-              </button>
+        {/* Academic Program / Section Filter */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <select
+            value={sectionFilter}
+            onChange={(e) => setSectionFilter(e.target.value)}
+            className="rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-bold text-gray-700 hover:border-brand-300 focus:border-brand-500 focus:outline-hidden"
+          >
+            <option value="all">All Sections &amp; Programs</option>
+            {ACADEMIC_SECTION_GROUPS.map((grp) => (
+              <optgroup key={grp.group} label={grp.group}>
+                {grp.options.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </optgroup>
             ))}
-          </>
-        )}
+          </select>
+        </div>
       </div>
 
       {/* ────────────────── Sessions List / Cards ────────────────── */}
@@ -214,29 +218,41 @@ export default function SessionsPage() {
         </div>
       ) : (
         <div className="space-y-2.5">
-          {filteredSessions.map((session) => (
-            <Link
-              key={session.id}
-              href={`/sessions/${session.id}`}
-              className="group block rounded-2xl border border-gray-200 bg-white p-4 shadow-xs transition-all hover:border-brand-200 hover:shadow-md active:scale-[0.99]"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-start gap-3 flex-1 min-w-0">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700 group-hover:bg-brand-100 transition-colors">
-                    <Calendar className="h-5 w-5" />
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-bold text-sm text-gray-900 leading-tight">
-                        {formatDate(session.session_date)}
-                      </span>
-                      {session.section && (
-                        <span className="rounded-md bg-brand-50 px-2 py-0.5 text-[11px] font-bold text-brand-700">
-                          Sec {session.section}
-                        </span>
-                      )}
+          {filteredSessions.map((session) => {
+            const academic = normalizeAcademicSection(session.section, session.class_name);
+            return (
+              <Link
+                key={session.id}
+                href={`/sessions/${session.id}`}
+                className="group block rounded-2xl border border-gray-200 bg-white p-4 shadow-xs transition-all hover:border-brand-200 hover:shadow-md active:scale-[0.99]"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-3 flex-1 min-w-0">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-brand-50 text-brand-700 group-hover:bg-brand-100 transition-colors">
+                      <Calendar className="h-5 w-5" />
                     </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-sm text-gray-900 leading-tight">
+                          {formatDate(session.session_date)}
+                        </span>
+                        <span
+                          className={`rounded-md px-2 py-0.5 text-[11px] font-bold border ${
+                            academic.badgeVariant === 'purple'
+                              ? 'bg-purple-50 text-purple-800 border-purple-200'
+                              : academic.badgeVariant === 'blue'
+                              ? 'bg-blue-50 text-blue-800 border-blue-200'
+                              : academic.badgeVariant === 'emerald'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                              : academic.badgeVariant === 'amber'
+                              ? 'bg-amber-50 text-amber-800 border-amber-200'
+                              : 'bg-gray-50 text-gray-700 border-gray-200'
+                          }`}
+                        >
+                          {academic.badgeLabel}
+                        </span>
+                      </div>
 
                     <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
                       {session.class_name && <span>{session.class_name}</span>}
@@ -265,7 +281,8 @@ export default function SessionsPage() {
                 </div>
               </div>
             </Link>
-          ))}
+          );
+        })}
         </div>
       )}
     </div>
