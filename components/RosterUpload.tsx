@@ -30,55 +30,312 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
   const [errors, setErrors] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const parseRowsFromData = (
-    data: Record<string, unknown>[],
+  // Scoring function to find the English Student Name column
+  const scoreNameHeader = (headerText: string): number => {
+    const h = String(headerText || '').toLowerCase().trim();
+    if (!h) return -999;
+
+    // Severe exclusions: Father, Mother, Kannada, Principal, College, etc.
+    if (
+      h.includes('kannada') ||
+      h.includes('ಕನ್ನಡ') ||
+      h.includes('regional') ||
+      h.includes('mother tongue') ||
+      h.includes('father') ||
+      h.includes('mother') ||
+      h.includes('parent') ||
+      h.includes('guardian') ||
+      h.includes('husband') ||
+      h.includes('college') ||
+      h.includes('institution') ||
+      h.includes('department') ||
+      h.includes('principal') ||
+      h.includes('faculty') ||
+      h.includes('teacher') ||
+      h.includes('guide') ||
+      h.includes('mentor') ||
+      h.includes('staff') ||
+      h.includes('center') ||
+      h.includes('place')
+    ) {
+      return -999;
+    }
+
+    // Top priority: Explicitly mentions English student / candidate name
+    if (
+      (h.includes('english') || h.includes('eng')) &&
+      (h.includes('name') || h.includes('candidate') || h.includes('student'))
+    ) {
+      return 100;
+    }
+
+    // High priority: Student / Candidate Name
+    if (
+      h === 'student name' ||
+      h === 'candidate name' ||
+      h === 'name of the student' ||
+      h === 'name of student' ||
+      h === 'name of candidate' ||
+      h === 'name of the candidate' ||
+      h === 'student_name' ||
+      h === 'candidate_name' ||
+      h === "student's name"
+    ) {
+      return 85;
+    }
+
+    if (
+      (h.includes('student') || h.includes('candidate')) &&
+      h.includes('name')
+    ) {
+      return 75;
+    }
+
+    // As per SSLC / 10th / ID
+    if (h.includes('name') && (h.includes('sslc') || h.includes('10th') || h.includes('certificate'))) {
+      return 70;
+    }
+
+    // Standalone name
+    if (h === 'name' || h === 'full name' || h === 'fullname') {
+      return 50;
+    }
+
+    if (h.includes('name')) {
+      return 30;
+    }
+
+    return -1;
+  };
+
+  // Scoring function to find the UUCMS / Roll No column
+  const scoreUcmsHeader = (headerText: string): number => {
+    const h = String(headerText || '').toLowerCase().trim();
+    if (!h) return -999;
+
+    // Severe exclusions: Serial numbers, Mobile numbers, Aadhaar, Fees, etc.
+    if (
+      h === 'sl' ||
+      h === 'sl no' ||
+      h === 'sl.no' ||
+      h === 's.no' ||
+      h === 'sno' ||
+      h.includes('serial') ||
+      h.includes('mobile') ||
+      h.includes('phone') ||
+      h.includes('contact') ||
+      h.includes('aadhar') ||
+      h.includes('aadhaar') ||
+      h.includes('uid') ||
+      h.includes('challan') ||
+      h.includes('receipt') ||
+      h.includes('fee') ||
+      h.includes('amount') ||
+      h.includes('pin') ||
+      h.includes('dob') ||
+      h.includes('date') ||
+      h.includes('gender') ||
+      h.includes('category') ||
+      h.includes('quota')
+    ) {
+      return -999;
+    }
+
+    // Top priority: UUCMS
+    if (h.includes('uucms') || h.includes('ucms') || h.includes('u-ucms')) {
+      return 100;
+    }
+
+    // High priority: Registration / Register No
+    if (
+      h.includes('registration') ||
+      h.includes('register no') ||
+      h.includes('reg no') ||
+      h.includes('reg. no') ||
+      h.includes('reg_no') ||
+      h.includes('register number') ||
+      h.includes('reg.number')
+    ) {
+      return 85;
+    }
+
+    // Medium priority: Roll No / USN
+    if (
+      h.includes('roll no') ||
+      h.includes('roll number') ||
+      h.includes('rollno') ||
+      h.includes('roll_no') ||
+      h.includes('usn')
+    ) {
+      return 70;
+    }
+
+    if (h === 'roll' || h === 'reg' || h === 'id' || h === 'enrollment' || h === 'hall ticket') {
+      return 40;
+    }
+
+    return -1;
+  };
+
+  // Scoring function for Section / Class / Year
+  const scoreSectionHeader = (headerText: string): number => {
+    const h = String(headerText || '').toLowerCase().trim();
+    if (!h) return -999;
+
+    if (h.includes('intersection') || h.includes('dissection') || h.includes('selection')) {
+      return -999;
+    }
+
+    if (h === 'section' || h === 'sec') return 100;
+    if (h.includes('section') || h.includes('sec')) return 80;
+    if (h === 'class' || h === 'semester' || h === 'sem' || h === 'year' || h === 'branch') return 60;
+    if (h.includes('sem') || h.includes('class') || h.includes('year') || h.includes('branch')) return 40;
+
+    return -1;
+  };
+
+  // Core 2D grid parser that finds the real header row and extracts English Name and UUCMS
+  const parseGridRows = (
+    grid: unknown[][],
     sheetName: string
   ): { parsed: RosterRow[]; errs: string[] } => {
     const errs: string[] = [];
     const parsed: RosterRow[] = [];
 
-    if (data.length === 0) {
+    if (!grid || grid.length === 0) {
       return { parsed, errs };
     }
 
-    const sampleKeys = Object.keys(data[0] || {});
-    const findCol = (patterns: string[]) =>
-      sampleKeys.find((k) =>
-        patterns.some((p) => k.toLowerCase().trim().includes(p))
-      );
+    // 1. Scan the first 20 rows to find the true table header row
+    let headerRowIdx = -1;
+    let bestNameColIdx = -1;
+    let bestUcmsColIdx = -1;
+    let bestSecColIdx = -1;
+    let maxCombinedScore = 0;
 
-    const nameCol = findCol(['name', 'student', 'candidate', 'student name']);
-    const ucmsCol = findCol(['ucms', 'uucms', 'roll', 'reg', 'register', 'id', 'enrollment', 'hall ticket']);
-    const sectionCol = findCol(['section', 'sec', 'class', 'sem', 'semester', 'year', 'branch']);
+    const maxHeaderScan = Math.min(grid.length, 25);
+    for (let r = 0; r < maxHeaderScan; r++) {
+      const row = grid[r];
+      if (!Array.isArray(row) || row.length === 0) continue;
 
-    if (!nameCol) errs.push(`[${sheetName}] Could not find a "Name" column.`);
-    if (!ucmsCol) errs.push(`[${sheetName}] Could not find a "UUCMS / Roll No" column.`);
+      let rowMaxNameScore = -999;
+      let rowNameIdx = -1;
+      let rowMaxUcmsScore = -999;
+      let rowUcmsIdx = -1;
+      let rowMaxSecScore = -999;
+      let rowSecIdx = -1;
 
-    if (!nameCol || !ucmsCol) {
+      row.forEach((cell, cIdx) => {
+        const str = String(cell || '').trim();
+        if (!str) return;
+
+        const nameScore = scoreNameHeader(str);
+        if (nameScore > rowMaxNameScore) {
+          rowMaxNameScore = nameScore;
+          rowNameIdx = cIdx;
+        }
+
+        const ucmsScore = scoreUcmsHeader(str);
+        if (ucmsScore > rowMaxUcmsScore) {
+          rowMaxUcmsScore = ucmsScore;
+          rowUcmsIdx = cIdx;
+        }
+
+        const secScore = scoreSectionHeader(str);
+        if (secScore > rowMaxSecScore) {
+          rowMaxSecScore = secScore;
+          rowSecIdx = cIdx;
+        }
+      });
+
+      // Valid header row candidate must have positive Name and positive UUCMS scores
+      if (rowMaxNameScore > 0 && rowMaxUcmsScore > 0 && rowNameIdx !== rowUcmsIdx) {
+        const combined = rowMaxNameScore + rowMaxUcmsScore;
+        if (combined > maxCombinedScore) {
+          maxCombinedScore = combined;
+          headerRowIdx = r;
+          bestNameColIdx = rowNameIdx;
+          bestUcmsColIdx = rowUcmsIdx;
+          bestSecColIdx = rowMaxSecScore > 0 && rowSecIdx !== rowNameIdx && rowSecIdx !== rowUcmsIdx ? rowSecIdx : -1;
+        }
+      }
+    }
+
+    // Fallback if not found: try row 0
+    if (headerRowIdx === -1) {
+      errs.push(`[${sheetName}] Could not automatically detect "English Name" and "UUCMS" columns.`);
       return { parsed, errs };
     }
 
-    data.forEach((row, idx) => {
-      const rawName = String(row[nameCol] || '').trim();
-      const rawUcms = String(row[ucmsCol] || '').trim().toUpperCase();
+    // 2. Iterate data rows after the header
+    for (let r = headerRowIdx + 1; r < grid.length; r++) {
+      const row = grid[r];
+      if (!Array.isArray(row) || row.length === 0) continue;
 
-      if (!rawName && !rawUcms) {
-        // Empty row, skip
-        return;
+      let rawName = String(row[bestNameColIdx] || '').trim();
+      const rawUcms = String(row[bestUcmsColIdx] || '').trim().toUpperCase().replace(/\s+/g, '');
+
+      // Skip empty row
+      if (!rawName && !rawUcms) continue;
+
+      // Filter out footer / summary rows (Total, Count, Principal Signature, etc.)
+      const lowerName = rawName.toLowerCase();
+      const lowerUcms = rawUcms.toLowerCase();
+      if (
+        lowerName.includes('total') ||
+        lowerName.includes('strength') ||
+        lowerName.includes('count') ||
+        lowerName.includes('principal') ||
+        lowerName.includes('signature') ||
+        lowerName.includes('verified') ||
+        lowerName.includes('staff') ||
+        lowerName.includes('date:') ||
+        lowerUcms.includes('total') ||
+        lowerUcms.includes('signature')
+      ) {
+        continue;
       }
 
-      if (!rawName || !rawUcms) {
-        errs.push(`[${sheetName}] Row ${idx + 2}: Missing ${!rawName ? 'Student Name' : 'UUCMS Roll No'}`);
-        return;
+      // Kannada script detector (\u0C80-\u0CFF)
+      const hasKannada = /[\u0C80-\u0CFF]/.test(rawName);
+      if (hasKannada) {
+        // If the detected column has Kannada, search other cells in this row for the English candidate name
+        let foundEnglish = '';
+        row.forEach((cell, cIdx) => {
+          if (cIdx === bestUcmsColIdx || cIdx === bestSecColIdx) return;
+          const text = String(cell || '').trim();
+          if (
+            text.length >= 3 &&
+            /^[a-zA-Z\s\.\-']+$/.test(text) &&
+            !/^(male|female|other|yes|no|pass|fail|gen|obc|sc|st|cat|ii|iii|bca|bsc|bcom)$/i.test(text)
+          ) {
+            foundEnglish = text;
+          }
+        });
+        if (foundEnglish) {
+          rawName = foundEnglish;
+        }
+      }
+
+      // Clean leading serial numbers (e.g., "1. Mohit Gujjar" -> "Mohit Gujjar")
+      rawName = rawName.replace(/^\d+[\.\-\s)]+/, '').trim();
+
+      // If still missing essential data, log notice and skip
+      if (!rawName || !rawUcms || rawUcms.length < 3) {
+        // Only warn if row seems like a student entry rather than empty trailing cell
+        if (rawName || rawUcms) {
+          errs.push(`[${sheetName}] Row ${r + 1}: Skipped incomplete entry (Name: "${rawName}", UUCMS: "${rawUcms}")`);
+        }
+        continue;
       }
 
       let rowSection: string | undefined = undefined;
-      if (sectionCol && row[sectionCol]) {
-        rowSection = String(row[sectionCol]).trim();
+      if (bestSecColIdx !== -1 && row[bestSecColIdx]) {
+        rowSection = String(row[bestSecColIdx]).trim();
       }
 
-      // If no explicit section column in the row, default to sheet name if descriptive
-      if (!rowSection && sheetName && sheetName !== 'Sheet1' && sheetName !== 'CSV Roster') {
+      // Default section to sheet name if informative
+      if (!rowSection && sheetName && !sheetName.toLowerCase().startsWith('sheet') && sheetName !== 'CSV Roster') {
         rowSection = sheetName.trim();
       }
 
@@ -88,7 +345,7 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
         section: rowSection,
         sheetSource: sheetName,
       });
-    });
+    }
 
     return { parsed, errs };
   };
@@ -100,13 +357,13 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
     if (ext === 'csv' || ext === 'txt') {
       try {
         const Papa = (await import('papaparse')).default;
-        Papa.parse<Record<string, unknown>>(file, {
-          header: true,
+        Papa.parse<unknown[]>(file, {
+          header: false,
           skipEmptyLines: 'greedy',
           complete: (result) => {
-            const { parsed, errs } = parseRowsFromData(result.data, 'CSV Roster');
+            const { parsed, errs } = parseGridRows(result.data, 'CSV Roster');
             if (parsed.length === 0) {
-              setErrors(errs.length > 0 ? errs : ['No valid student rows found in CSV.']);
+              setErrors(errs.length > 0 ? errs : ['No valid student rows found with Name in English and UUCMS No.']);
               return;
             }
             setSheets([{ sheetName: 'CSV Roster', rows: parsed, errorCount: errs.length }]);
@@ -144,14 +401,16 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
               const sheet = workbook.Sheets[sheetName];
               if (!sheet) continue;
 
-              const jsonData = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+              // Read 2D grid of cell values
+              const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+                header: 1,
                 defval: '',
                 raw: false,
               });
 
-              if (jsonData.length === 0) continue;
+              if (grid.length === 0) continue;
 
-              const { parsed, errs } = parseRowsFromData(jsonData, sheetName);
+              const { parsed, errs } = parseGridRows(grid, sheetName);
               if (parsed.length > 0) {
                 parsedSheets.push({
                   sheetName,
@@ -166,7 +425,7 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
               setErrors(
                 collectedErrors.length > 0
                   ? collectedErrors
-                  : ['No valid student records found in any sheets. Ensure columns include "Name" and "UUCMS".']
+                  : ['No valid student records found. Ensure columns include "Name in English" and "UUCMS No".']
               );
               return;
             }
@@ -294,11 +553,16 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
                 <CheckCircle className="h-4 w-4" />
               </div>
               <div>
-                <h3 className="text-sm font-bold text-gray-900 leading-tight">
-                  {totalStudentsCount} Students Detected
-                </h3>
-                <p className="text-xs text-gray-500">
-                  Ready to import across {sheets.length} workbook sheet{sheets.length !== 1 ? 's' : ''}
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold text-gray-900 leading-tight">
+                    {totalStudentsCount} Students Detected
+                  </h3>
+                  <span className="rounded-md bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                    ✨ English Names &amp; UUCMS Only
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Extraneous columns (father/mother names, regional script, mobile, fees) are automatically ignored. Ready to import across {sheets.length} workbook sheet{sheets.length !== 1 ? 's' : ''}.
                 </p>
               </div>
             </div>
@@ -384,7 +648,7 @@ export default function RosterUpload({ onUploadComplete }: RosterUploadProps) {
                 <thead className="sticky top-0 bg-gray-50/95 border-b border-gray-200 backdrop-blur-xs">
                   <tr>
                     <th className="px-3 py-2 text-left font-bold text-gray-600 w-12">#</th>
-                    <th className="px-3 py-2 text-left font-bold text-gray-600">Student Name</th>
+                    <th className="px-3 py-2 text-left font-bold text-gray-600">Student Name (English)</th>
                     <th className="px-3 py-2 text-left font-bold text-gray-600">UUCMS Roll No.</th>
                     <th className="px-3 py-2 text-left font-bold text-gray-600">Section / Year</th>
                     {sheets.length > 1 && (
