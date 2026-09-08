@@ -8,6 +8,9 @@ import {
   Users,
   Search,
   ChevronRight,
+  ChevronLeft,
+  CalendarDays,
+  Layers,
   Loader2,
   BarChart3,
   Calendar,
@@ -106,14 +109,6 @@ export default function DashboardPage() {
     total: 0,
     pct: 100,
   });
-  const [occupancyData, setOccupancyData] = useState<{
-    id: string;
-    label: string;
-    section: string;
-    occupied: number;
-    capacity: number;
-    pct: number;
-  }[]>([]);
   const [sectionTurnout, setSectionTurnout] = useState<{
     section: string;
     degree: string;
@@ -126,6 +121,46 @@ export default function DashboardPage() {
     badgeVariant: 'purple' | 'blue' | 'emerald' | 'amber' | 'gray';
   }[]>([]);
   const [academicProgramFilter, setAcademicProgramFilter] = useState<'ALL' | 'BCA' | 'PUC' | 'SPECIAL'>('ALL');
+
+  // Calendar & Time-Series Analytics State
+  const [timeHorizon, setTimeHorizon] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+  const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
+
+  const [dailyTimeline, setDailyTimeline] = useState<{
+    dateStr: string;
+    label: string;
+    fullDateLabel: string;
+    sessionsCount: number;
+    totalAttendance: number;
+    avgOccupancyPct: number;
+    sessions: LabSession[];
+  }[]>([]);
+
+  const [weeklyTimeline, setWeeklyTimeline] = useState<{
+    weekKey: string;
+    label: string;
+    sessionsCount: number;
+    totalAttendance: number;
+    avgAttendance: number;
+    avgOccupancyPct: number;
+  }[]>([]);
+
+  const [monthlyTimeline, setMonthlyTimeline] = useState<{
+    monthKey: string;
+    label: string;
+    sessionsCount: number;
+    totalAttendance: number;
+    avgAttendance: number;
+    avgOccupancyPct: number;
+  }[]>([]);
+
+  const [capacityTiers, setCapacityTiers] = useState({
+    high: 0,
+    moderate: 0,
+    low: 0,
+    total: 0,
+  });
 
   // Flagged systems & Resolution state
   const [flaggedSystems, setFlaggedSystems] = useState<FlaggedSystem[]>([]);
@@ -275,29 +310,139 @@ export default function DashboardPage() {
       }
       setCountMismatches(mismatchedSessions);
 
-      // Occupancy data for latest sessions (chronological order)
-      const recent = allSessions.slice(0, 8).reverse();
-      const occupancy = recent.map((s) => {
-        const occupied = countMap.get(s.id) || s.total_system_count || 0;
-        const capacity = s.total_system_count || Math.max(60, occupied);
-        const pct = Math.min(100, Math.round((occupied / Math.max(1, capacity)) * 100));
-        let shortDate = s.session_date;
+      // ── Daily Timeline Aggregation ──
+      const dateMap = new Map<string, { sessions: LabSession[]; attendees: number }>();
+      for (const s of allSessions) {
+        if (!s.session_date) continue;
+        const count = countMap.get(s.id) || s.total_system_count || 0;
+        const existing = dateMap.get(s.session_date) || { sessions: [], attendees: 0 };
+        existing.sessions.push(s);
+        existing.attendees += count;
+        dateMap.set(s.session_date, existing);
+      }
+
+      const sortedDates = Array.from(dateMap.keys()).sort();
+      const daily = sortedDates.map((dateStr) => {
+        const item = dateMap.get(dateStr)!;
+        let shortLabel = dateStr;
+        let fullLabel = dateStr;
         try {
-          const d = new Date(s.session_date + 'T00:00:00');
-          shortDate = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+          const d = new Date(dateStr + 'T00:00:00');
+          shortLabel = d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+          fullLabel = d.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
         } catch {}
 
-        const academic = normalizeAcademicSection(s.section, s.class_name);
+        const cap = item.sessions.length * 60;
+        const pct = Math.min(100, Math.round((item.attendees / Math.max(1, cap)) * 100));
+
         return {
-          id: s.id,
-          label: shortDate,
-          section: academic.badgeLabel,
-          occupied,
-          capacity,
-          pct,
+          dateStr,
+          label: shortLabel,
+          fullDateLabel: fullLabel,
+          sessionsCount: item.sessions.length,
+          totalAttendance: item.attendees,
+          avgOccupancyPct: pct,
+          sessions: item.sessions,
         };
       });
-      setOccupancyData(occupancy);
+      setDailyTimeline(daily);
+
+      // ── Weekly Timeline Aggregation ──
+      const weekMap = new Map<string, { sessions: LabSession[]; attendees: number; startDate: Date; label: string }>();
+      for (const s of allSessions) {
+        if (!s.session_date) continue;
+        try {
+          const d = new Date(s.session_date + 'T00:00:00');
+          const day = d.getDay();
+          const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday of week
+          const monday = new Date(d.getFullYear(), d.getMonth(), diff);
+          const weekKey = `${monday.getFullYear()}-W${String(Math.ceil((monday.getDate() + 6) / 7)).padStart(2, '0')}-${monday.getMonth()}`;
+          const weekLabel = `Week of ${monday.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`;
+
+          const count = countMap.get(s.id) || s.total_system_count || 0;
+          const existing = weekMap.get(weekKey) || { sessions: [], attendees: 0, startDate: monday, label: weekLabel };
+          existing.sessions.push(s);
+          existing.attendees += count;
+          weekMap.set(weekKey, existing);
+        } catch {}
+      }
+
+      const weekly = Array.from(weekMap.entries()).map(([weekKey, item]) => {
+        const cap = item.sessions.length * 60;
+        return {
+          weekKey,
+          label: item.label,
+          sessionsCount: item.sessions.length,
+          totalAttendance: item.attendees,
+          avgAttendance: Math.round(item.attendees / Math.max(1, item.sessions.length)),
+          avgOccupancyPct: Math.min(100, Math.round((item.attendees / Math.max(1, cap)) * 100)),
+        };
+      });
+      setWeeklyTimeline(weekly);
+
+      // ── Monthly Timeline Aggregation ──
+      const monthMap = new Map<string, { sessions: LabSession[]; attendees: number }>();
+      for (const s of allSessions) {
+        if (!s.session_date) continue;
+        const mKey = s.session_date.slice(0, 7);
+        const count = countMap.get(s.id) || s.total_system_count || 0;
+        const existing = monthMap.get(mKey) || { sessions: [], attendees: 0 };
+        existing.sessions.push(s);
+        existing.attendees += count;
+        monthMap.set(mKey, existing);
+      }
+
+      const sortedMonths = Array.from(monthMap.keys()).sort();
+      const monthly = sortedMonths.map((mKey) => {
+        const item = monthMap.get(mKey)!;
+        let label = mKey;
+        try {
+          const d = new Date(mKey + '-01T00:00:00');
+          label = d.toLocaleDateString('en-IN', { month: 'short', year: 'numeric' });
+        } catch {}
+
+        const cap = item.sessions.length * 60;
+        return {
+          monthKey: mKey,
+          label,
+          sessionsCount: item.sessions.length,
+          totalAttendance: item.attendees,
+          avgAttendance: Math.round(item.attendees / Math.max(1, item.sessions.length)),
+          avgOccupancyPct: Math.min(100, Math.round((item.attendees / Math.max(1, cap)) * 100)),
+        };
+      });
+      setMonthlyTimeline(monthly);
+
+      // ── Capacity Tiers Distribution ──
+      let highCap = 0;
+      let modCap = 0;
+      let lowCap = 0;
+      for (const s of allSessions) {
+        const occupied = countMap.get(s.id) || s.total_system_count || 0;
+        const cap = s.total_system_count || Math.max(60, occupied);
+        const pct = Math.round((occupied / Math.max(1, cap)) * 100);
+        if (pct >= 85) highCap++;
+        else if (pct >= 60) modCap++;
+        else lowCap++;
+      }
+      setCapacityTiers({
+        high: highCap,
+        moderate: modCap,
+        low: lowCap,
+        total: allSessions.length,
+      });
+
+      // ── Initialize Calendar Focus to latest session month ──
+      if (allSessions.length > 0) {
+        const latestDate = allSessions[0].session_date;
+        try {
+          const d = new Date(latestDate + 'T00:00:00');
+          if (!isNaN(d.getTime())) {
+            setCalendarMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+            setSelectedCalendarDate(latestDate);
+          }
+        } catch {}
+      }
 
       // Section turnout aggregation structured by academic program
       const academicSectionMap = new Map<string, { count: number; attendees: number; sampleClass: string | null }>();
@@ -437,6 +582,55 @@ export default function DashboardPage() {
 
   const loadFlaggedSystems = async () => {
     await loadOverview();
+  };
+
+  const getCalendarDays = () => {
+    const year = calendarMonth.getFullYear();
+    const month = calendarMonth.getMonth();
+    const firstDayIndex = new Date(year, month, 1).getDay();
+    const totalDays = new Date(year, month + 1, 0).getDate();
+
+    const sessionDateMap = new Map<string, LabSession[]>();
+    for (const s of sessions) {
+      if (s.session_date) {
+        const list = sessionDateMap.get(s.session_date) || [];
+        list.push(s);
+        sessionDateMap.set(s.session_date, list);
+      }
+    }
+
+    const days: {
+      dayNumber: number | null;
+      dateStr: string | null;
+      sessions: LabSession[];
+      hasSessions: boolean;
+      totalAttendees: number;
+    }[] = [];
+
+    for (let i = 0; i < firstDayIndex; i++) {
+      days.push({
+        dayNumber: null,
+        dateStr: null,
+        sessions: [],
+        hasSessions: false,
+        totalAttendees: 0,
+      });
+    }
+
+    for (let d = 1; d <= totalDays; d++) {
+      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const daySessions = sessionDateMap.get(dateStr) || [];
+      const totalAttendees = daySessions.reduce((acc, s) => acc + (s.total_system_count || 0), 0);
+      days.push({
+        dayNumber: d,
+        dateStr,
+        sessions: daySessions,
+        hasSessions: daySessions.length > 0,
+        totalAttendees,
+      });
+    }
+
+    return days;
   };
 
   const searchStudentsForHistory = async (query: string) => {
@@ -843,36 +1037,356 @@ export default function DashboardPage() {
       {/* Analytics & Charts Tab */}
       {activeTab === 'analytics' && (
         <div className="mt-6 space-y-6">
-          {/* Header Summary */}
-          <div className="flex flex-wrap items-center justify-between gap-4">
+          {/* Header Summary & Time Horizon Selector */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
-              <h2 className="text-lg font-bold text-gray-900">Lab Utilization &amp; Incident Intelligence</h2>
+              <h2 className="text-lg font-bold text-gray-900">Lab Activity &amp; Utilization Intelligence</h2>
               <p className="text-xs text-gray-500">
-                Visual charts and statistics generated from ledger records and hardware logs
+                Time-series attendance trends, monthly calendar activity, and system capacity distribution
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="badge-info text-xs">
-                {totalSessions} sessions logged
-              </span>
-              <span className="badge-success text-xs">
-                {signatureStats.pct}% attendance verified
-              </span>
+
+            {/* Time Horizon Segmented Control (Daily / Weekly / Monthly) */}
+            <div className="flex rounded-2xl bg-gray-200/80 p-1 text-xs font-semibold self-start sm:self-auto">
+              <button
+                onClick={() => setTimeHorizon('daily')}
+                className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 transition-all ${
+                  timeHorizon === 'daily'
+                    ? 'bg-white text-brand-700 shadow-2xs font-bold'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <CalendarDays className="h-3.5 w-3.5" />
+                <span>Daily</span>
+              </button>
+              <button
+                onClick={() => setTimeHorizon('weekly')}
+                className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 transition-all ${
+                  timeHorizon === 'weekly'
+                    ? 'bg-white text-brand-700 shadow-2xs font-bold'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <TrendingUp className="h-3.5 w-3.5" />
+                <span>Weekly</span>
+              </button>
+              <button
+                onClick={() => setTimeHorizon('monthly')}
+                className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 transition-all ${
+                  timeHorizon === 'monthly'
+                    ? 'bg-white text-brand-700 shadow-2xs font-bold'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <Calendar className="h-3.5 w-3.5" />
+                <span>Monthly</span>
+              </button>
             </div>
           </div>
 
-          {/* Chart Row 1: Lab System Occupancy & Utilization Trend */}
-          <div className="card">
+          {/* Period Summary Metric Cards (4 Balanced Cards) */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="card p-3.5">
+              <p className="text-[11px] text-gray-500">
+                {timeHorizon === 'daily' ? 'Active Lab Days' : timeHorizon === 'weekly' ? 'Active Weeks' : 'Active Months'}
+              </p>
+              <p className="text-xl font-bold text-gray-900 mt-0.5">
+                {timeHorizon === 'daily' ? dailyTimeline.length : timeHorizon === 'weekly' ? weeklyTimeline.length : monthlyTimeline.length}
+              </p>
+              <p className="text-[10px] text-brand-700 font-medium">
+                {totalSessions} total sessions
+              </p>
+            </div>
+
+            <div className="card p-3.5">
+              <p className="text-[11px] text-gray-500">Total Attendees Logged</p>
+              <p className="text-xl font-bold text-gray-900 mt-0.5">{totalAttendances}</p>
+              <p className="text-[10px] text-blue-600 font-medium">
+                ~{avgAttendance} per session
+              </p>
+            </div>
+
+            <div className="card p-3.5">
+              <p className="text-[11px] text-gray-500">Optimal Lab Usage</p>
+              <p className="text-xl font-bold text-emerald-700 mt-0.5">
+                {capacityTiers.total > 0
+                  ? Math.round(((capacityTiers.high + capacityTiers.moderate) / capacityTiers.total) * 100)
+                  : 100}%
+              </p>
+              <p className="text-[10px] text-emerald-600 font-medium">
+                {capacityTiers.high} full sessions (≥85%)
+              </p>
+            </div>
+
+            <div className="card p-3.5">
+              <p className="text-[11px] text-gray-500">Signature Compliance</p>
+              <p className="text-xl font-bold text-gray-900 mt-0.5">{signatureStats.pct}%</p>
+              <p className="text-[10px] text-green-700 font-medium">
+                {signatureStats.signed} verified signatures
+              </p>
+            </div>
+          </div>
+
+          {/* Main Feature: Interactive Lab Activity Calendar & Day Inspector */}
+          <div className="card space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-gray-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-50 text-brand-700">
+                  <CalendarDays className="h-4 w-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-gray-900">Lab Activity Calendar</h3>
+                  <p className="text-xs text-gray-500">
+                    Tap any day to inspect ledger sessions, enrolled sections, and faculty
+                  </p>
+                </div>
+              </div>
+
+              {/* Month Navigator Controls */}
+              <div className="flex items-center gap-2">
+                <div className="flex items-center rounded-xl border border-gray-200 bg-white p-0.5 shadow-2xs">
+                  <button
+                    onClick={() => {
+                      setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1));
+                    }}
+                    className="rounded-lg p-1.5 text-gray-600 hover:bg-gray-100 transition-colors"
+                    title="Previous Month"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <span className="min-w-[120px] text-center text-xs font-bold text-gray-800">
+                    {calendarMonth.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
+                  </span>
+                  <button
+                    onClick={() => {
+                      setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1));
+                    }}
+                    className="rounded-lg p-1.5 text-gray-600 hover:bg-gray-100 transition-colors"
+                    title="Next Month"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+
+                {/* Reset to Today / Latest */}
+                {sessions.length > 0 && (
+                  <button
+                    onClick={() => {
+                      try {
+                        const d = new Date(sessions[0].session_date + 'T00:00:00');
+                        setCalendarMonth(new Date(d.getFullYear(), d.getMonth(), 1));
+                        setSelectedCalendarDate(sessions[0].session_date);
+                      } catch {}
+                    }}
+                    className="rounded-xl border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-brand-50 hover:text-brand-700 hover:border-brand-200 transition-all"
+                  >
+                    Latest Session
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Calendar Matrix & Day Detail Split Grid */}
+            <div className="grid gap-5 lg:grid-cols-12">
+              {/* Calendar Grid (7 columns, 8 of 12 columns on desktop) */}
+              <div className="lg:col-span-7 xl:col-span-8">
+                {/* Day Headers */}
+                <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-bold text-gray-400 mb-1.5 uppercase tracking-wider">
+                  <span>Sun</span>
+                  <span>Mon</span>
+                  <span>Tue</span>
+                  <span>Wed</span>
+                  <span>Thu</span>
+                  <span>Fri</span>
+                  <span>Sat</span>
+                </div>
+
+                {/* Calendar Cells */}
+                <div className="grid grid-cols-7 gap-1 sm:gap-1.5">
+                  {getCalendarDays().map((day, idx) => {
+                    if (!day.dayNumber) {
+                      return (
+                        <div
+                          key={`empty-${idx}`}
+                          className="h-14 sm:h-16 rounded-xl bg-gray-50/40 border border-transparent"
+                        />
+                      );
+                    }
+
+                    const isSelected = selectedCalendarDate === day.dateStr;
+                    return (
+                      <button
+                        key={day.dateStr}
+                        onClick={() => setSelectedCalendarDate(day.dateStr)}
+                        className={`h-14 sm:h-16 rounded-xl border p-1 sm:p-1.5 text-left transition-all flex flex-col justify-between relative ${
+                          isSelected
+                            ? 'border-brand-600 bg-brand-50/70 ring-2 ring-brand-600/30 shadow-xs'
+                            : day.hasSessions
+                            ? 'border-brand-200 bg-white hover:border-brand-400 hover:shadow-2xs'
+                            : 'border-gray-100 bg-gray-50/30 text-gray-400 hover:bg-gray-50 hover:border-gray-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span
+                            className={`text-xs font-bold leading-none ${
+                              isSelected
+                                ? 'text-brand-800'
+                                : day.hasSessions
+                                ? 'text-gray-900 font-extrabold'
+                                : 'text-gray-400'
+                            }`}
+                          >
+                            {day.dayNumber}
+                          </span>
+                          {day.hasSessions && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-brand-600 sm:hidden" />
+                          )}
+                        </div>
+
+                        {day.hasSessions ? (
+                          <div className="space-y-0.5">
+                            <span className="hidden sm:inline-block rounded-md bg-brand-100/90 px-1 py-0.5 text-[9px] font-bold text-brand-800 truncate max-w-full">
+                              {day.sessions.length} sess • {day.totalAttendees}
+                            </span>
+                            <span className="sm:hidden text-[9px] font-bold text-brand-700">
+                              {day.totalAttendees}p
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-[9px] text-gray-300 select-none">&nbsp;</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Day Inspector Panel (4 of 12 columns on desktop) */}
+              <div className="lg:col-span-5 xl:col-span-4 rounded-xl border border-gray-100 bg-gray-50/60 p-3.5 flex flex-col justify-between">
+                {(() => {
+                  const daySessions = selectedCalendarDate
+                    ? sessions.filter((s) => s.session_date === selectedCalendarDate)
+                    : [];
+                  const formattedSelected = selectedCalendarDate
+                    ? (() => {
+                        try {
+                          return new Date(selectedCalendarDate + 'T00:00:00').toLocaleDateString('en-IN', {
+                            weekday: 'short',
+                            day: 'numeric',
+                            month: 'short',
+                            year: 'numeric',
+                          });
+                        } catch {
+                          return selectedCalendarDate;
+                        }
+                      })()
+                    : 'Select a Date';
+
+                  return (
+                    <div>
+                      <div className="flex items-center justify-between border-b border-gray-200/80 pb-2.5">
+                        <div>
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
+                            Daily Inspector
+                          </p>
+                          <h4 className="text-sm font-bold text-gray-900 leading-tight">
+                            {formattedSelected}
+                          </h4>
+                        </div>
+                        {daySessions.length > 0 && (
+                          <span className="badge-info text-xs">
+                            {daySessions.length} session{daySessions.length !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="mt-3 space-y-2 max-h-[260px] overflow-y-auto pr-1">
+                        {daySessions.length === 0 ? (
+                          <div className="py-8 text-center text-gray-400">
+                            <Clock className="mx-auto h-7 w-7 text-gray-300" />
+                            <p className="mt-2 text-xs">No sessions conducted on this date</p>
+                            <Link
+                              href="/sessions/new"
+                              className="btn-secondary mt-3 inline-flex text-xs py-1 px-2.5"
+                            >
+                              Log Session
+                            </Link>
+                          </div>
+                        ) : (
+                          daySessions.map((session) => {
+                            const academic = normalizeAcademicSection(session.section, session.class_name);
+                            return (
+                              <Link
+                                key={session.id}
+                                href={`/sessions/${session.id}`}
+                                className="block rounded-xl border border-gray-200 bg-white p-2.5 shadow-2xs transition-all hover:border-brand-300 hover:shadow-xs group"
+                              >
+                                <div className="flex items-start justify-between gap-1.5">
+                                  <span
+                                    className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold border ${
+                                      academic.badgeVariant === 'purple'
+                                        ? 'bg-purple-50 text-purple-800 border-purple-200'
+                                        : academic.badgeVariant === 'blue'
+                                        ? 'bg-blue-50 text-blue-800 border-blue-200'
+                                        : academic.badgeVariant === 'emerald'
+                                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                        : academic.badgeVariant === 'amber'
+                                        ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                        : 'bg-gray-50 text-gray-700 border-gray-200'
+                                    }`}
+                                  >
+                                    {academic.badgeLabel}
+                                  </span>
+                                  <span
+                                    className={
+                                      session.faculty_confirmed
+                                        ? 'badge-success text-[9px]'
+                                        : 'badge-warning text-[9px]'
+                                    }
+                                  >
+                                    {session.faculty_confirmed ? 'Confirmed' : 'Draft'}
+                                  </span>
+                                </div>
+
+                                <div className="mt-1.5 flex items-center justify-between text-xs text-gray-600">
+                                  <span>{session.faculty_name || 'Faculty: Not specified'}</span>
+                                  <span className="font-bold text-gray-900">
+                                    {session.total_system_count ?? '—'} PCs
+                                  </span>
+                                </div>
+                              </Link>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </div>
+          </div>
+
+          {/* Chart Row 1: Time Horizon Dynamic Bar Chart */}
+          <div className="card space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
                   <TrendingUp className="h-4 w-4 text-brand-600" />
-                  Lab System Occupancy Trend (Recent Sessions)
+                  {timeHorizon === 'daily'
+                    ? 'Daily Attendance & Lab Utilization'
+                    : timeHorizon === 'weekly'
+                    ? 'Weekly Aggregated Lab Turnout'
+                    : 'Monthly Lab Session Volume'}
                 </h3>
                 <p className="mt-0.5 text-xs text-gray-500">
-                  Percentage of lab capacity utilized per session
+                  {timeHorizon === 'daily'
+                    ? 'Student count and percentage of lab capacity utilized per active day'
+                    : timeHorizon === 'weekly'
+                    ? 'Week-over-week attendance volume and average turnout per session'
+                    : 'Month-over-month attendance records and peak utilization'}
                 </p>
               </div>
+
               <div className="flex items-center gap-3 text-xs text-gray-500">
                 <span className="flex items-center gap-1">
                   <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500" /> High (≥85%)
@@ -886,243 +1400,329 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {occupancyData.length === 0 ? (
-              <div className="py-12 text-center text-gray-400 text-sm">
-                No session occupancy data available yet
-              </div>
-            ) : (
-              <div className="mt-6">
-                {/* Responsive Bar Chart */}
-                <div className="flex h-56 items-end gap-3 sm:gap-6 border-b border-gray-200 pb-3 pt-4 px-2">
-                  {occupancyData.map((item) => {
-                    const barColor =
-                      item.pct >= 85
-                        ? 'bg-emerald-500 hover:bg-emerald-600'
-                        : item.pct >= 60
-                        ? 'bg-amber-500 hover:bg-amber-600'
-                        : 'bg-rose-500 hover:bg-rose-600';
+            {/* Dynamic Rendering of Timeline Bars */}
+            {(() => {
+              const currentList =
+                timeHorizon === 'daily'
+                  ? dailyTimeline.slice(-10)
+                  : timeHorizon === 'weekly'
+                  ? weeklyTimeline
+                  : monthlyTimeline;
 
-                    return (
-                      <div
-                        key={item.id}
-                        className="group relative flex flex-1 flex-col items-center h-full justify-end"
-                      >
-                        {/* Tooltip on hover */}
-                        <div className="pointer-events-none absolute -top-12 z-20 hidden rounded-md bg-gray-900 px-2 py-1 text-center text-[11px] font-medium text-white shadow-md group-hover:block whitespace-nowrap">
-                          {item.label} ({item.section})
-                          <br />
-                          {item.occupied} / {item.capacity} systems ({item.pct}%)
+              if (currentList.length === 0) {
+                return (
+                  <div className="py-12 text-center text-xs text-gray-400">
+                    No session records available for {timeHorizon} timeline
+                  </div>
+                );
+              }
+
+              return (
+                <div className="pt-2">
+                  <div className="flex h-56 items-end gap-2 sm:gap-4 border-b border-gray-200 pb-3 pt-4 px-2">
+                    {currentList.map((item, idx) => {
+                      const pct = item.avgOccupancyPct;
+                      const barColor =
+                        pct >= 85
+                          ? 'bg-emerald-500 hover:bg-emerald-600'
+                          : pct >= 60
+                          ? 'bg-amber-500 hover:bg-amber-600'
+                          : 'bg-rose-500 hover:bg-rose-600';
+
+                      return (
+                        <div
+                          key={idx}
+                          className="group relative flex flex-1 flex-col items-center h-full justify-end cursor-pointer"
+                          onClick={() => {
+                            if ('dateStr' in item && item.dateStr) {
+                              setSelectedCalendarDate(item.dateStr);
+                            }
+                          }}
+                        >
+                          {/* Hover Tooltip */}
+                          <div className="pointer-events-none absolute -top-14 z-20 hidden rounded-lg bg-gray-900 px-2.5 py-1.5 text-center text-[11px] font-medium text-white shadow-md group-hover:block whitespace-nowrap">
+                            <span className="font-bold">{item.label}</span>
+                            <br />
+                            {item.totalAttendance} student attendees ({pct}% fill)
+                            <br />
+                            {item.sessionsCount} session{item.sessionsCount !== 1 ? 's' : ''}
+                          </div>
+
+                          {/* Top Metric */}
+                          <span className="mb-1 text-[10px] sm:text-[11px] font-bold text-gray-700">
+                            {item.totalAttendance}
+                          </span>
+
+                          {/* Bar */}
+                          <div className="w-full max-w-[48px] rounded-t-md bg-gray-100 flex flex-col justify-end h-full">
+                            <div
+                              style={{ height: `${Math.max(10, pct)}%` }}
+                              className={`w-full rounded-t-md transition-all duration-300 ${barColor}`}
+                            />
+                          </div>
+
+                          {/* Bottom Label */}
+                          <span className="mt-2 text-[10px] font-medium text-gray-500 truncate max-w-[55px] sm:max-w-[70px]">
+                            {item.label}
+                          </span>
                         </div>
-
-                        {/* Top Label */}
-                        <span className="mb-1.5 text-[11px] font-semibold text-gray-600">
-                          {item.pct}%
-                        </span>
-
-                        {/* Bar */}
-                        <div className="w-full max-w-[48px] rounded-t-md bg-gray-100 flex flex-col justify-end h-full">
-                          <div
-                            style={{ height: `${Math.max(8, item.pct)}%` }}
-                            className={`w-full rounded-t-md transition-all duration-300 ${barColor}`}
-                          />
-                        </div>
-
-                        {/* Bottom X-axis label */}
-                        <span className="mt-2 text-[10px] font-medium text-gray-500 truncate max-w-[60px]">
-                          {item.label}
-                        </span>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
 
-          {/* Chart Row 2: Grid with Hardware Issue Categories & Signature Verification Gauge */}
+          {/* Symmetrical Grid Row 1: Academic Turnout & Capacity Intelligence */}
           <div className="grid gap-6 lg:grid-cols-2">
-            {/* Hardware Incident Breakdown */}
-            <div className="card">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-                    <Wrench className="h-4 w-4 text-amber-600" />
-                    Hardware Issues by Category
-                  </h3>
-                  <p className="mt-0.5 text-xs text-gray-500">
-                    Automated classification of per-student remarks
-                  </p>
-                </div>
-                <span className="badge-warning text-xs">
-                  {hardwareCategories.total} total flags
-                </span>
-              </div>
-
-              <div className="mt-5 space-y-3.5">
-                {/* Mouse */}
-                <div>
-                  <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
-                    <span className="flex items-center gap-1.5">
-                      🖱️ Mouse &amp; Pointing Devices
-                    </span>
-                    <span>
-                      {hardwareCategories.mouse} (
-                      {hardwareCategories.total > 0
-                        ? Math.round((hardwareCategories.mouse / hardwareCategories.total) * 100)
-                        : 0}
-                      %)
-                    </span>
+            {/* Card A1: Academic Turnout by Program */}
+            <div className="card flex flex-col justify-between space-y-4">
+              <div>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                      <PieChart className="h-4 w-4 text-purple-600" />
+                      Academic Turnout by Program &amp; Semester
+                    </h3>
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      Average attendance volume and capacity utilization per section
+                    </p>
                   </div>
-                  <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
-                    <div
-                      style={{
-                        width: `${
-                          hardwareCategories.total > 0
-                            ? (hardwareCategories.mouse / hardwareCategories.total) * 100
-                            : 0
-                        }%`,
-                      }}
-                      className="h-full bg-blue-500 rounded-full transition-all"
-                    />
+
+                  <div className="flex rounded-xl bg-gray-100 p-0.5 text-xs font-semibold">
+                    {(['ALL', 'BCA', 'PUC', 'SPECIAL'] as const).map((prog) => (
+                      <button
+                        key={prog}
+                        onClick={() => setAcademicProgramFilter(prog)}
+                        className={`rounded-lg px-2 py-1 transition-all ${
+                          academicProgramFilter === prog
+                            ? 'bg-white text-brand-700 shadow-2xs font-bold'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        {prog === 'ALL' ? 'All' : prog === 'SPECIAL' ? 'Workshops' : prog}
+                      </button>
+                    ))}
                   </div>
                 </div>
 
-                {/* Keyboard */}
-                <div>
-                  <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
-                    <span className="flex items-center gap-1.5">
-                      ⌨️ Keyboards &amp; Keys
-                    </span>
-                    <span>
-                      {hardwareCategories.keyboard} (
-                      {hardwareCategories.total > 0
-                        ? Math.round((hardwareCategories.keyboard / hardwareCategories.total) * 100)
-                        : 0}
-                      %)
-                    </span>
-                  </div>
-                  <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
-                    <div
-                      style={{
-                        width: `${
-                          hardwareCategories.total > 0
-                            ? (hardwareCategories.keyboard / hardwareCategories.total) * 100
-                            : 0
-                        }%`,
-                      }}
-                      className="h-full bg-amber-500 rounded-full transition-all"
-                    />
-                  </div>
-                </div>
-
-                {/* Display */}
-                <div>
-                  <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
-                    <span className="flex items-center gap-1.5">
-                      🖥️ Monitors &amp; Displays
-                    </span>
-                    <span>
-                      {hardwareCategories.display} (
-                      {hardwareCategories.total > 0
-                        ? Math.round((hardwareCategories.display / hardwareCategories.total) * 100)
-                        : 0}
-                      %)
-                    </span>
-                  </div>
-                  <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
-                    <div
-                      style={{
-                        width: `${
-                          hardwareCategories.total > 0
-                            ? (hardwareCategories.display / hardwareCategories.total) * 100
-                            : 0
-                        }%`,
-                      }}
-                      className="h-full bg-purple-500 rounded-full transition-all"
-                    />
-                  </div>
-                </div>
-
-                {/* Other/Power */}
-                <div>
-                  <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
-                    <span className="flex items-center gap-1.5">
-                      ⚡ Power, Network &amp; Other
-                    </span>
-                    <span>
-                      {hardwareCategories.other} (
-                      {hardwareCategories.total > 0
-                        ? Math.round((hardwareCategories.other / hardwareCategories.total) * 100)
-                        : 0}
-                      %)
-                    </span>
-                  </div>
-                  <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
-                    <div
-                      style={{
-                        width: `${
-                          hardwareCategories.total > 0
-                            ? (hardwareCategories.other / hardwareCategories.total) * 100
-                            : 0
-                        }%`,
-                      }}
-                      className="h-full bg-emerald-500 rounded-full transition-all"
-                    />
-                  </div>
+                <div className="mt-4 space-y-3 max-h-[300px] overflow-y-auto pr-1">
+                  {sectionTurnout
+                    .filter((sec) => {
+                      if (academicProgramFilter === 'ALL') return true;
+                      if (academicProgramFilter === 'BCA') return sec.degree === 'BCA';
+                      if (academicProgramFilter === 'PUC') return sec.degree === 'PUC';
+                      return sec.degree !== 'BCA' && sec.degree !== 'PUC';
+                    })
+                    .map((sec) => {
+                      const fillRate = Math.min(100, Math.round((sec.avgAttendance / 60) * 100));
+                      return (
+                        <div
+                          key={sec.section}
+                          className="rounded-xl border border-gray-100 bg-gray-50/50 p-3 transition-colors hover:bg-gray-50"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span
+                              className={`rounded-md px-2 py-0.5 text-[11px] font-bold border ${
+                                sec.badgeVariant === 'purple'
+                                  ? 'bg-purple-50 text-purple-800 border-purple-200'
+                                  : sec.badgeVariant === 'blue'
+                                  ? 'bg-blue-50 text-blue-800 border-blue-200'
+                                  : sec.badgeVariant === 'emerald'
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                  : sec.badgeVariant === 'amber'
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-gray-50 text-gray-700 border-gray-200'
+                              }`}
+                            >
+                              {sec.badgeLabel}
+                            </span>
+                            <span className="text-xs font-bold text-gray-700">
+                              ~{sec.avgAttendance} students <span className="font-normal text-gray-400">({sec.sessionsCount} sess)</span>
+                            </span>
+                          </div>
+                          <div className="mt-2 h-2 w-full rounded-full bg-gray-200/80 overflow-hidden">
+                            <div
+                              style={{ width: `${fillRate}%` }}
+                              className={`h-full rounded-full ${
+                                fillRate >= 80 ? 'bg-emerald-500' : fillRate >= 50 ? 'bg-blue-500' : 'bg-amber-500'
+                              }`}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
                 </div>
               </div>
 
-              <div className="mt-4 pt-3 border-t border-gray-100 flex justify-end">
-                <button
-                  onClick={() => setActiveTab('systems')}
-                  className="text-xs font-medium text-brand-600 hover:underline"
-                >
-                  View Affected PC List →
-                </button>
+              <div className="pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
+                <span>Lab Capacity Benchmark: 60 Systems</span>
+                <span className="font-semibold text-brand-700">{sectionTurnout.length} Tracked Sections</span>
               </div>
             </div>
 
-            {/* Attendance & Physical Signature Verification Gauge */}
+            {/* Card A2: Lab Capacity Utilization Breakdown */}
+            <div className="card flex flex-col justify-between space-y-4">
+              <div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                      <Layers className="h-4 w-4 text-emerald-600" />
+                      Lab Capacity Utilization Breakdown
+                    </h3>
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      Distribution of sessions by seat efficiency relative to 60 capacity
+                    </p>
+                  </div>
+                  <span className="badge-info text-xs">{totalSessions} Sessions</span>
+                </div>
+
+                <div className="mt-5 space-y-4">
+                  {/* High Capacity */}
+                  <div>
+                    <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
+                      <span className="flex items-center gap-1.5 font-bold text-emerald-800">
+                        <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                        Full Capacity (≥85% Filled)
+                      </span>
+                      <span>
+                        {capacityTiers.high} sessions (
+                        {capacityTiers.total > 0
+                          ? Math.round((capacityTiers.high / capacityTiers.total) * 100)
+                          : 0}
+                        %)
+                      </span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                      <div
+                        style={{
+                          width: `${
+                            capacityTiers.total > 0
+                              ? (capacityTiers.high / capacityTiers.total) * 100
+                              : 0
+                          }%`,
+                        }}
+                        className="h-full bg-emerald-500 rounded-full transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Moderate Usage */}
+                  <div>
+                    <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
+                      <span className="flex items-center gap-1.5 font-bold text-amber-800">
+                        <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
+                        Moderate Usage (60–84% Filled)
+                      </span>
+                      <span>
+                        {capacityTiers.moderate} sessions (
+                        {capacityTiers.total > 0
+                          ? Math.round((capacityTiers.moderate / capacityTiers.total) * 100)
+                          : 0}
+                        %)
+                      </span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                      <div
+                        style={{
+                          width: `${
+                            capacityTiers.total > 0
+                              ? (capacityTiers.moderate / capacityTiers.total) * 100
+                              : 0
+                          }%`,
+                        }}
+                        className="h-full bg-amber-500 rounded-full transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Light Usage */}
+                  <div>
+                    <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
+                      <span className="flex items-center gap-1.5 font-bold text-rose-800">
+                        <span className="h-2.5 w-2.5 rounded-full bg-rose-500" />
+                        Light Usage (&lt;60% Filled)
+                      </span>
+                      <span>
+                        {capacityTiers.low} sessions (
+                        {capacityTiers.total > 0
+                          ? Math.round((capacityTiers.low / capacityTiers.total) * 100)
+                          : 0}
+                        %)
+                      </span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                      <div
+                        style={{
+                          width: `${
+                            capacityTiers.total > 0
+                              ? (capacityTiers.low / capacityTiers.total) * 100
+                              : 0
+                          }%`,
+                        }}
+                        className="h-full bg-rose-500 rounded-full transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-xl bg-emerald-50/60 p-3 border border-emerald-100 text-xs text-emerald-900 flex items-center justify-between">
+                <span className="font-medium">Lab Efficiency Score</span>
+                <span className="font-bold text-emerald-800">
+                  {capacityTiers.total > 0
+                    ? Math.round(((capacityTiers.high + capacityTiers.moderate) / capacityTiers.total) * 100)
+                    : 100}
+                  % Optimal Utilization
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Symmetrical Grid Row 2: Compliance & Hardware Diagnostics */}
+          <div className="grid gap-6 lg:grid-cols-2">
+            {/* Card B1: Physical Signature Compliance */}
             <div className="card flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between">
                   <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
                     <CheckCircle2 className="h-4 w-4 text-green-600" />
-                    Physical Signature Verification Rate
+                    Physical Ledger Signature Compliance
                   </h3>
                   <span className="badge-info text-xs">{signatureStats.total} entries</span>
                 </div>
                 <p className="mt-0.5 text-xs text-gray-500">
-                  Compliance rate of students physically signing the paper ledger
+                  Audit compliance rate of students physically signing the paper register
                 </p>
-              </div>
 
-              {/* Circular Gauge */}
-              <div className="my-6 flex flex-col items-center justify-center">
-                <div className="relative flex h-36 w-36 items-center justify-center">
-                  <svg className="h-full w-full -rotate-90" viewBox="0 0 36 36">
-                    <path
-                      className="text-gray-100"
-                      strokeWidth="3.8"
-                      stroke="currentColor"
-                      fill="none"
-                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                    />
-                    <path
-                      className="text-emerald-500 transition-all duration-1000 ease-out"
-                      strokeDasharray={`${signatureStats.pct}, 100`}
-                      strokeWidth="3.8"
-                      strokeLinecap="round"
-                      stroke="currentColor"
-                      fill="none"
-                      d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                    />
-                  </svg>
-                  <div className="absolute flex flex-col items-center justify-center text-center">
-                    <span className="text-2xl font-bold text-gray-900">
-                      {signatureStats.pct}%
-                    </span>
-                    <span className="text-[10px] text-gray-400">Signed</span>
+                {/* Circular SVG Gauge */}
+                <div className="my-5 flex flex-col items-center justify-center">
+                  <div className="relative flex h-32 w-32 items-center justify-center">
+                    <svg className="h-full w-full -rotate-90" viewBox="0 0 36 36">
+                      <path
+                        className="text-gray-100"
+                        strokeWidth="3.8"
+                        stroke="currentColor"
+                        fill="none"
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                      />
+                      <path
+                        className="text-emerald-500 transition-all duration-1000 ease-out"
+                        strokeDasharray={`${signatureStats.pct}, 100`}
+                        strokeWidth="3.8"
+                        strokeLinecap="round"
+                        stroke="currentColor"
+                        fill="none"
+                        d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                      />
+                    </svg>
+                    <div className="absolute flex flex-col items-center justify-center text-center">
+                      <span className="text-2xl font-bold text-gray-900">
+                        {signatureStats.pct}%
+                      </span>
+                      <span className="text-[10px] text-gray-400">Signed</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1138,117 +1738,144 @@ export default function DashboardPage() {
                 </div>
               </div>
             </div>
-          </div>
 
-          {/* Chart Row 3: Academic Program & Section Turnout Breakdown */}
-          <div className="card space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+            {/* Card B2: Hardware Defect Classification */}
+            <div className="card flex flex-col justify-between">
               <div>
-                <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
-                  <PieChart className="h-4 w-4 text-purple-600" />
-                  Academic Turnout by Program &amp; Semester
-                </h3>
-                <p className="mt-0.5 text-xs text-gray-500">
-                  Standardized attendance volume and average lab capacity utilization by class section
-                </p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900">
+                      <Wrench className="h-4 w-4 text-amber-600" />
+                      Hardware Defect Classification
+                    </h3>
+                    <p className="mt-0.5 text-xs text-gray-500">
+                      Automated classification of authentic machine defect remarks
+                    </p>
+                  </div>
+                  <span className="badge-warning text-xs">
+                    {hardwareCategories.total} issues logged
+                  </span>
+                </div>
+
+                <div className="mt-5 space-y-3.5">
+                  {/* Mouse */}
+                  <div>
+                    <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
+                      <span>🖱️ Mouse &amp; Pointing Devices</span>
+                      <span>
+                        {hardwareCategories.mouse} (
+                        {hardwareCategories.total > 0
+                          ? Math.round((hardwareCategories.mouse / hardwareCategories.total) * 100)
+                          : 0}
+                        %)
+                      </span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                      <div
+                        style={{
+                          width: `${
+                            hardwareCategories.total > 0
+                              ? (hardwareCategories.mouse / hardwareCategories.total) * 100
+                              : 0
+                          }%`,
+                        }}
+                        className="h-full bg-blue-500 rounded-full transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Keyboard */}
+                  <div>
+                    <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
+                      <span>⌨️ Keyboards &amp; Keys</span>
+                      <span>
+                        {hardwareCategories.keyboard} (
+                        {hardwareCategories.total > 0
+                          ? Math.round((hardwareCategories.keyboard / hardwareCategories.total) * 100)
+                          : 0}
+                        %)
+                      </span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                      <div
+                        style={{
+                          width: `${
+                            hardwareCategories.total > 0
+                              ? (hardwareCategories.keyboard / hardwareCategories.total) * 100
+                              : 0
+                          }%`,
+                        }}
+                        className="h-full bg-amber-500 rounded-full transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Display */}
+                  <div>
+                    <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
+                      <span>🖥️ Monitors &amp; Displays</span>
+                      <span>
+                        {hardwareCategories.display} (
+                        {hardwareCategories.total > 0
+                          ? Math.round((hardwareCategories.display / hardwareCategories.total) * 100)
+                          : 0}
+                        %)
+                      </span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                      <div
+                        style={{
+                          width: `${
+                            hardwareCategories.total > 0
+                              ? (hardwareCategories.display / hardwareCategories.total) * 100
+                              : 0
+                          }%`,
+                        }}
+                        className="h-full bg-purple-500 rounded-full transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Other / Power */}
+                  <div>
+                    <div className="flex justify-between text-xs font-medium text-gray-700 mb-1">
+                      <span>⚡ Power, Network &amp; Other</span>
+                      <span>
+                        {hardwareCategories.other} (
+                        {hardwareCategories.total > 0
+                          ? Math.round((hardwareCategories.other / hardwareCategories.total) * 100)
+                          : 0}
+                        %)
+                      </span>
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                      <div
+                        style={{
+                          width: `${
+                            hardwareCategories.total > 0
+                              ? (hardwareCategories.other / hardwareCategories.total) * 100
+                              : 0
+                          }%`,
+                        }}
+                        className="h-full bg-emerald-500 rounded-full transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* Program Segmented Selector */}
-              <div className="flex rounded-xl bg-gray-100 p-1 text-xs font-semibold">
-                {(['ALL', 'BCA', 'PUC', 'SPECIAL'] as const).map((prog) => (
-                  <button
-                    key={prog}
-                    onClick={() => setAcademicProgramFilter(prog)}
-                    className={`rounded-lg px-2.5 py-1 transition-all ${
-                      academicProgramFilter === prog
-                        ? 'bg-white text-brand-700 shadow-2xs font-bold'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    {prog === 'ALL' ? 'All Programs' : prog === 'SPECIAL' ? 'Workshops' : prog}
-                  </button>
-                ))}
+              <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between">
+                <span className="text-xs text-gray-400">
+                  {flaggedSystems.filter((s) => !s.is_resolved).length} active defects
+                </span>
+                <button
+                  onClick={() => setActiveTab('systems')}
+                  className="text-xs font-semibold text-brand-700 hover:underline"
+                >
+                  Manage Flagged Systems →
+                </button>
               </div>
             </div>
-
-            {sectionTurnout.length === 0 ? (
-              <p className="text-center text-xs text-gray-400 py-8">
-                No section attendance data recorded yet
-              </p>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {sectionTurnout
-                  .filter((sec) => {
-                    if (academicProgramFilter === 'ALL') return true;
-                    if (academicProgramFilter === 'BCA') return sec.degree === 'BCA';
-                    if (academicProgramFilter === 'PUC') return sec.degree === 'PUC';
-                    return sec.degree !== 'BCA' && sec.degree !== 'PUC';
-                  })
-                  .map((sec) => {
-                    const fillRatePct = Math.min(100, Math.round((sec.avgAttendance / 60) * 100));
-                    return (
-                      <div
-                        key={sec.section}
-                        className="rounded-xl border border-gray-200 bg-white p-4 shadow-2xs transition-all hover:border-brand-200 hover:shadow-xs"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <span
-                            className={`rounded-md px-2 py-0.5 text-[11px] font-bold border ${
-                              sec.badgeVariant === 'purple'
-                                ? 'bg-purple-50 text-purple-800 border-purple-200'
-                                : sec.badgeVariant === 'blue'
-                                ? 'bg-blue-50 text-blue-800 border-blue-200'
-                                : sec.badgeVariant === 'emerald'
-                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                                : sec.badgeVariant === 'amber'
-                                ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                : 'bg-gray-50 text-gray-700 border-gray-200'
-                            }`}
-                          >
-                            {sec.badgeLabel}
-                          </span>
-                          <span className="text-[11px] font-bold text-gray-500">
-                            {sec.sessionsCount} session{sec.sessionsCount !== 1 ? 's' : ''}
-                          </span>
-                        </div>
-
-                        <div className="mt-3 flex items-baseline justify-between">
-                          <div>
-                            <p className="text-xl font-bold text-gray-900">{sec.totalAttendance}</p>
-                            <p className="text-[11px] text-gray-500">Total Student Attendees</p>
-                          </div>
-                          <div className="text-right">
-                            <p className="text-base font-semibold text-brand-700">
-                              ~{sec.avgAttendance} <span className="text-xs text-gray-400 font-normal">/ session</span>
-                            </p>
-                            <p className="text-[10px] text-gray-400">Lab Capacity (~60)</p>
-                          </div>
-                        </div>
-
-                        {/* Capacity Fill Bar */}
-                        <div className="mt-3 space-y-1">
-                          <div className="flex justify-between text-[10px] font-medium text-gray-500">
-                            <span>Avg Lab Occupancy</span>
-                            <span className="font-semibold text-gray-700">{fillRatePct}%</span>
-                          </div>
-                          <div className="h-2 w-full rounded-full bg-gray-100 overflow-hidden">
-                            <div
-                              style={{ width: `${fillRatePct}%` }}
-                              className={`h-full rounded-full transition-all ${
-                                fillRatePct >= 80
-                                  ? 'bg-emerald-500'
-                                  : fillRatePct >= 50
-                                  ? 'bg-blue-500'
-                                  : 'bg-amber-500'
-                              }`}
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-              </div>
-            )}
           </div>
         </div>
       )}
