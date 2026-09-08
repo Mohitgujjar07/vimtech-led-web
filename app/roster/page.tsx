@@ -104,7 +104,7 @@ export default function RosterPage() {
       for (const s of studentList) {
         const studentSec = (s.section || '').trim().toLowerCase();
         // Sessions held for this section, or total if section unspecified
-        const total = (studentSec && sectionSessionCount.get(studentSec)) || confirmedSessions.length || 1;
+        const total = (studentSec && sectionSessionCount.get(studentSec)) ?? confirmedSessions.length;
 
         // Count unique confirmed sessions attended by this student
         const attendedByUUID = studentAttendedMap.get(s.id)?.size || 0;
@@ -113,8 +113,10 @@ export default function RosterPage() {
 
         const pct = total > 0 ? Math.round((attended / total) * 100) : 100;
         let status: 'good' | 'warning' | 'defaulter' = 'good';
-        if (pct < 75) status = 'defaulter';
-        else if (pct < 85) status = 'warning';
+        if (total > 0) {
+          if (pct < 75) status = 'defaulter';
+          else if (pct < 85) status = 'warning';
+        }
 
         statsMap.set(s.id, {
           attended,
@@ -208,12 +210,13 @@ export default function RosterPage() {
   }, [students, search, sectionFilter, activeTab, defaulterOnly, attendanceMap]);
 
   const defaultersCount = useMemo(() => {
+    if (totalConfirmedSessions === 0) return 0;
     let count = 0;
     attendanceMap.forEach((stats) => {
-      if (stats.percentage < 75) count++;
+      if (stats.totalSessions > 0 && stats.percentage < 75) count++;
     });
     return count;
-  }, [attendanceMap]);
+  }, [attendanceMap, totalConfirmedSessions]);
 
   const handleExportDefaulters = async () => {
     setExportingDefaulters(true);
@@ -583,6 +586,14 @@ export default function RosterPage() {
               </table>
             </div>
           </>
+        ) : totalConfirmedSessions === 0 ? (
+          <div className="py-16 text-center text-gray-400 px-4">
+            <CalendarCheck className="mx-auto h-12 w-12 text-gray-300 mb-3" />
+            <p className="text-base font-bold text-gray-800">No Confirmed Lab Sessions Yet</p>
+            <p className="mt-1 text-xs text-gray-500 max-w-md mx-auto">
+              Attendance compliance and 75% exam hall ticket shortage warnings will automatically calculate once sessions are conducted and confirmed by faculty.
+            </p>
+          </div>
         ) : (
           /* ────────────────── Attendance Compliance & Defaulters Tab ────────────────── */
           <>
@@ -592,8 +603,8 @@ export default function RosterPage() {
                 const stats = attendanceMap.get(student.id) || {
                   attended: 0,
                   totalSessions: totalConfirmedSessions,
-                  percentage: 0,
-                  status: 'defaulter',
+                  percentage: totalConfirmedSessions > 0 ? 0 : 100,
+                  status: totalConfirmedSessions > 0 ? 'defaulter' : 'good',
                 };
                 return (
                   <div key={student.id} className="p-3.5 space-y-2">
@@ -660,8 +671,8 @@ export default function RosterPage() {
                     const stats = attendanceMap.get(student.id) || {
                       attended: 0,
                       totalSessions: totalConfirmedSessions,
-                      percentage: 0,
-                      status: 'defaulter',
+                      percentage: totalConfirmedSessions > 0 ? 0 : 100,
+                      status: totalConfirmedSessions > 0 ? 'defaulter' : 'good',
                     };
                     return (
                       <tr key={student.id} className="hover:bg-gray-50 transition-colors">

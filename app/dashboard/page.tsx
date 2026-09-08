@@ -1508,51 +1508,57 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="mt-4 space-y-3 max-h-[300px] overflow-y-auto pr-1">
-                  {sectionTurnout
-                    .filter((sec) => {
-                      if (academicProgramFilter === 'ALL') return true;
-                      if (academicProgramFilter === 'BCA') return sec.degree === 'BCA';
-                      if (academicProgramFilter === 'PUC') return sec.degree === 'PUC';
-                      return sec.degree !== 'BCA' && sec.degree !== 'PUC';
-                    })
-                    .map((sec) => {
-                      const fillRate = Math.min(100, Math.round((sec.avgAttendance / 60) * 100));
-                      return (
-                        <div
-                          key={sec.section}
-                          className="rounded-xl border border-gray-100 bg-gray-50/50 p-3 transition-colors hover:bg-gray-50"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span
-                              className={`rounded-md px-2 py-0.5 text-[11px] font-bold border ${
-                                sec.badgeVariant === 'purple'
-                                  ? 'bg-purple-50 text-purple-800 border-purple-200'
-                                  : sec.badgeVariant === 'blue'
-                                  ? 'bg-blue-50 text-blue-800 border-blue-200'
-                                  : sec.badgeVariant === 'emerald'
-                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                                  : sec.badgeVariant === 'amber'
-                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                  : 'bg-gray-50 text-gray-700 border-gray-200'
-                              }`}
-                            >
-                              {sec.badgeLabel}
-                            </span>
-                            <span className="text-xs font-bold text-gray-700">
-                              ~{sec.avgAttendance} students <span className="font-normal text-gray-400">({sec.sessionsCount} sess)</span>
-                            </span>
+                  {sectionTurnout.length === 0 ? (
+                    <div className="py-12 text-center text-xs text-gray-400">
+                      No section turnout recorded yet
+                    </div>
+                  ) : (
+                    sectionTurnout
+                      .filter((sec) => {
+                        if (academicProgramFilter === 'ALL') return true;
+                        if (academicProgramFilter === 'BCA') return sec.degree === 'BCA';
+                        if (academicProgramFilter === 'PUC') return sec.degree === 'PUC';
+                        return sec.degree !== 'BCA' && sec.degree !== 'PUC';
+                      })
+                      .map((sec) => {
+                        const fillRate = Math.min(100, Math.round((sec.avgAttendance / 60) * 100));
+                        return (
+                          <div
+                            key={sec.section}
+                            className="rounded-xl border border-gray-100 bg-gray-50/50 p-3 transition-colors hover:bg-gray-50"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span
+                                className={`rounded-md px-2 py-0.5 text-[11px] font-bold border ${
+                                  sec.badgeVariant === 'purple'
+                                    ? 'bg-purple-50 text-purple-800 border-purple-200'
+                                    : sec.badgeVariant === 'blue'
+                                    ? 'bg-blue-50 text-blue-800 border-blue-200'
+                                    : sec.badgeVariant === 'emerald'
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                    : sec.badgeVariant === 'amber'
+                                    ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                    : 'bg-gray-50 text-gray-700 border-gray-200'
+                                }`}
+                              >
+                                {sec.badgeLabel}
+                              </span>
+                              <span className="text-xs font-bold text-gray-700">
+                                ~{sec.avgAttendance} students <span className="font-normal text-gray-400">({sec.sessionsCount} sess)</span>
+                              </span>
+                            </div>
+                            <div className="mt-2 h-2 w-full rounded-full bg-gray-200/80 overflow-hidden">
+                              <div
+                                style={{ width: `${fillRate}%` }}
+                                className={`h-full rounded-full ${
+                                  fillRate >= 80 ? 'bg-emerald-500' : fillRate >= 50 ? 'bg-blue-500' : 'bg-amber-500'
+                                }`}
+                              />
+                            </div>
                           </div>
-                          <div className="mt-2 h-2 w-full rounded-full bg-gray-200/80 overflow-hidden">
-                            <div
-                              style={{ width: `${fillRate}%` }}
-                              className={`h-full rounded-full ${
-                                fillRate >= 80 ? 'bg-emerald-500' : fillRate >= 50 ? 'bg-blue-500' : 'bg-amber-500'
-                              }`}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })
+                  )}
                 </div>
               </div>
 

@@ -258,17 +258,32 @@ export default function ExportPage() {
               {filteredSessions.length} session{filteredSessions.length !== 1 ? 's' : ''}
               {selectedIds.size > 0 && ` (${selectedIds.size} selected)`}
             </p>
-            <div className="flex gap-2">
-              <button onClick={selectAll} className="btn-secondary text-xs">
-                {selectedIds.size === filteredSessions.length
-                  ? 'Deselect All'
-                  : 'Select All'}
-              </button>
-            </div>
+            {filteredSessions.length > 0 && (
+              <div className="flex gap-2">
+                <button onClick={selectAll} className="btn-secondary text-xs">
+                  {selectedIds.size === filteredSessions.length
+                    ? 'Deselect All'
+                    : 'Select All'}
+                </button>
+              </div>
+            )}
           </div>
 
-          <div className="mt-3 space-y-2">
-            {filteredSessions.map((session) => (
+          {filteredSessions.length === 0 ? (
+            <div className="card mt-3 py-12 text-center text-gray-400">
+              <Calendar className="mx-auto h-10 w-10 text-gray-300" />
+              <p className="mt-3 text-sm font-semibold text-gray-800">
+                {sessions.length === 0 ? 'No sessions available to export' : 'No matching sessions found'}
+              </p>
+              <p className="mt-1 text-xs text-gray-500 max-w-sm mx-auto">
+                {sessions.length === 0
+                  ? 'Conduct and record lab sessions to export comprehensive Excel workbooks and attendance PDFs.'
+                  : 'Try clearing your filters or date range.'}
+              </p>
+            </div>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {filteredSessions.map((session) => (
               <label
                 key={session.id}
                 className={`card flex cursor-pointer items-center gap-4 transition-shadow hover:shadow-md ${
@@ -305,6 +320,7 @@ export default function ExportPage() {
               </label>
             ))}
           </div>
+          )}
         </div>
       )}
 
