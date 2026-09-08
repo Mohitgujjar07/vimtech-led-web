@@ -41,19 +41,43 @@ const SessionTableRow = memo(function SessionTableRow({
 
       {/* Student Name */}
       <td className="px-3 py-2">
-        {editable ? (
-          <input
-            type="text"
-            value={entry.raw_name_ocr || ''}
-            onChange={(e) => onUpdate(index, 'raw_name_ocr', e.target.value)}
-            placeholder="Student Name"
-            className="input py-1 text-xs"
-          />
-        ) : (
-          <span className="text-xs font-medium text-gray-900">
-            {entry.raw_name_ocr || '—'}
-          </span>
-        )}
+        <div className="flex flex-col gap-0.5">
+          {editable ? (
+            <input
+              type="text"
+              value={entry.raw_name_ocr || ''}
+              onChange={(e) => onUpdate(index, 'raw_name_ocr', e.target.value)}
+              placeholder="Student Name"
+              className="input py-1 text-xs"
+            />
+          ) : (
+            <span className="text-xs font-medium text-gray-900">
+              {entry.raw_name_ocr || '—'}
+            </span>
+          )}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {entry.matched ? (
+              <span
+                className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200"
+                title={entry.ocr_confidence ? `Roster match confidence: ${Math.round(entry.ocr_confidence * 100)}%` : 'Matched to master roster'}
+              >
+                <span>✨ Auto-Corrected</span>
+              </span>
+            ) : (
+              <span
+                className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9px] font-semibold bg-amber-50 text-amber-700 border border-amber-200"
+                title="Unmatched student — please verify handwriting"
+              >
+                <span>⚠️ Unmatched</span>
+              </span>
+            )}
+            {entry.remarks && entry.remarks.includes('[Handwriting:') && (
+              <span className="text-[9px] text-gray-400 truncate max-w-[140px]" title={entry.remarks}>
+                {entry.remarks.match(/\[Handwriting:.*?\]/)?.[0] || ''}
+              </span>
+            )}
+          </div>
+        </div>
       </td>
 
       {/* UUCMS No */}
@@ -165,19 +189,32 @@ const SessionCardRow = memo(function SessionCardRow({
           <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-brand-50 font-mono text-xs font-bold text-brand-700">
             {entry.sl_no}
           </span>
-          {editable ? (
-            <input
-              type="text"
-              value={entry.raw_name_ocr || ''}
-              onChange={(e) => onUpdate(index, 'raw_name_ocr', e.target.value)}
-              placeholder="Student Name"
-              className="input py-1.5 text-sm font-semibold flex-1 min-w-0"
-            />
-          ) : (
-            <span className="text-sm font-bold text-gray-900 truncate">
-              {entry.raw_name_ocr || 'Unnamed Student'}
-            </span>
-          )}
+          <div className="flex-1 min-w-0">
+            {editable ? (
+              <input
+                type="text"
+                value={entry.raw_name_ocr || ''}
+                onChange={(e) => onUpdate(index, 'raw_name_ocr', e.target.value)}
+                placeholder="Student Name"
+                className="input py-1.5 text-sm font-semibold w-full"
+              />
+            ) : (
+              <span className="text-sm font-bold text-gray-900 truncate block">
+                {entry.raw_name_ocr || 'Unnamed Student'}
+              </span>
+            )}
+            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+              {entry.matched ? (
+                <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  ✨ Auto-Corrected
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                  ⚠️ Unmatched
+                </span>
+              )}
+            </div>
+          </div>
         </div>
         {editable && (
           <button
@@ -397,6 +434,8 @@ export default function SessionTable({
   }, [entries, searchQuery]);
 
   const signedCount = entries.filter((e) => e.signature_present).length;
+  const matchedCount = entries.filter((e) => e.matched).length;
+  const unmatchedCount = entries.length - matchedCount;
 
   return (
     <div className="space-y-3">
@@ -421,9 +460,19 @@ export default function SessionTable({
           )}
         </div>
 
-        <div className="flex items-center justify-between sm:justify-end gap-2 text-xs text-gray-500">
-          <span>
-            {entries.length} student{entries.length !== 1 ? 's' : ''} ({signedCount} signed)
+        <div className="flex items-center justify-between sm:justify-end gap-2 text-xs text-gray-500 flex-wrap">
+          <span className="flex items-center gap-1.5 flex-wrap">
+            <span className="font-semibold text-gray-800">{entries.length} students</span>
+            <span>•</span>
+            <span className="text-emerald-700 font-medium">✨ {matchedCount} auto-matched</span>
+            {unmatchedCount > 0 && (
+              <>
+                <span>•</span>
+                <span className="text-amber-700 font-medium">⚠️ {unmatchedCount} unmatched</span>
+              </>
+            )}
+            <span>•</span>
+            <span className="text-gray-600">{signedCount} signed</span>
           </span>
 
           {editable && (

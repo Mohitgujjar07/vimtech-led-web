@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { extractLedgerData } from '@/lib/gemini';
 import { createServerClient } from '@/lib/supabase';
 import { OcrResult } from '@/lib/types';
-import { matchAllEntriesFast } from '@/lib/matching';
+import { matchAllEntriesEnhanced } from '@/lib/matching';
 import { verifySessionToken } from '@/lib/auth';
 
 export const maxDuration = 60; // Allow up to 60s for OCR processing
@@ -205,24 +205,39 @@ export async function POST(request: NextRequest) {
     // Concurrently upload photos
     await Promise.all(photoUploadPromises);
 
-    // Fuzzy-match extracted student names & UUCMS numbers against enrolled roster
-    const matchResults = await matchAllEntriesFast(
-      allRows.map((r) => ({ name: r.name || '', ucms_no: r.ucms_no || '' }))
+    // Match extracted handwriting rows against the master student roster with optical normalization & auto-correction
+    const finalSection = header.section || section || null;
+    const matchResults = await matchAllEntriesEnhanced(
+      allRows.map((r) => ({ name: r.name || '', ucms_no: r.ucms_no || '' })),
+      { sessionSection: finalSection }
     );
 
-    // Map extracted OCR rows to lab_entries with authentic match results
+    // Map extracted OCR rows to lab_entries, auto-correcting to verified roster data when confidence is high
     const entriesToInsert = allRows.map((row, idx) => {
       const match = matchResults[idx];
+      const isAutoCorrected = !!match?.auto_corrected;
+
+      // Auto-correct to official student Name & UUCMS if matched
+      const effectiveName = isAutoCorrected ? match.student_name : (row.name || '');
+      const effectiveUcms = isAutoCorrected ? match.student_ucms : (row.ucms_no || '');
+
+      // Preserve original handwriting remark if there was an auto-correction discrepancy
+      let remarks = row.remarks || null;
+      if (isAutoCorrected && (row.name !== match.student_name || row.ucms_no !== match.student_ucms)) {
+        const rawNote = `[Handwriting: ${row.name || '—'} / ${row.ucms_no || '—'}]`;
+        remarks = remarks ? `${remarks} ${rawNote}` : rawNote;
+      }
+
       return {
         session_id: session.id,
         sl_no: row.sl_no,
-        raw_name_ocr: row.name || '',
-        raw_ucms_ocr: row.ucms_no || '',
+        raw_name_ocr: effectiveName,
+        raw_ucms_ocr: effectiveUcms,
         system_no: row.system_no || null,
         signature_present: row.signature_present || false,
-        remarks: row.remarks || null,
+        remarks,
         student_id: match ? match.student_id : null,
-        matched: !!match,
+        matched: !!match?.matched,
         ocr_confidence: match ? match.confidence : null,
       };
     });
@@ -240,12 +255,14 @@ export async function POST(request: NextRequest) {
     }
 
     const matchedCount = entriesToInsert.filter((e) => e.matched).length;
+    const autoCorrectedCount = matchResults.filter((m) => m?.auto_corrected).length;
 
     return NextResponse.json({
       sessionId: session.id,
       totalPhotos: ocrResults.length,
       totalEntries: entriesToInsert.length,
       matchedEntries: matchedCount,
+      autoCorrectedEntries: autoCorrectedCount,
     });
   } catch (err) {
     console.error('OCR route error:', err);
