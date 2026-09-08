@@ -7,10 +7,12 @@ import {
   Filter,
   Loader2,
   Calendar,
+  RotateCcw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { createBrowserClient } from '@/lib/supabase';
 import { LabSession } from '@/lib/types';
+import { getAllSections, BCA_SEMESTERS, DEGREE_TYPES } from '@/lib/constants';
 
 export default function ExportPage() {
   const [sessions, setSessions] = useState<LabSession[]>([]);
@@ -22,13 +24,11 @@ export default function ExportPage() {
   const [dateTo, setDateTo] = useState('');
   const [filterSection, setFilterSection] = useState('');
   const [filterClass, setFilterClass] = useState('');
-  const [filterFaculty, setFilterFaculty] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Available filter options
   const [sections, setSections] = useState<string[]>([]);
   const [classes, setClasses] = useState<string[]>([]);
-  const [faculties, setFaculties] = useState<string[]>([]);
 
   useEffect(() => {
     loadSessions();
@@ -36,18 +36,44 @@ export default function ExportPage() {
 
   const loadSessions = async () => {
     const supabase = createBrowserClient();
-    const { data, error } = await supabase
-      .from('lab_sessions')
-      .select('*')
-      .order('session_date', { ascending: false });
+    const [sessionsRes, studentsRes] = await Promise.all([
+      supabase.from('lab_sessions').select('*').order('session_date', { ascending: false }),
+      supabase.from('students').select('section').not('section', 'is', null),
+    ]);
 
-    if (error) {
-      toast.error(`Failed to load sessions: ${error.message}`);
-    } else if (data) {
+    if (sessionsRes.error) {
+      toast.error(`Failed to load sessions: ${sessionsRes.error.message}`);
+    } else if (sessionsRes.data) {
+      const data = sessionsRes.data;
       setSessions(data);
-      setSections([...new Set(data.map((s) => s.section).filter(Boolean) as string[])]);
-      setClasses([...new Set(data.map((s) => s.class_name).filter(Boolean) as string[])]);
-      setFaculties([...new Set(data.map((s) => s.faculty_name).filter(Boolean) as string[])]);
+
+      // Collect all sections from:
+      // 1. Enrolled student roster in DB (e.g. 'I', 'III', 'V')
+      // 2. Institutional standard sections from constants
+      // 3. Any sections currently present in recorded sessions
+      const studentSections = (studentsRes.data || []).map((s) => s.section).filter(Boolean) as string[];
+      const sessionSections = data.map((s) => s.section).filter(Boolean) as string[];
+      const combinedSections = Array.from(
+        new Set(['I', 'III', 'V', ...getAllSections(), ...studentSections, ...sessionSections])
+      ).filter(Boolean).sort();
+
+      setSections(combinedSections);
+
+      // Collect all classes from:
+      // 1. DEGREE_TYPES ('BCA', 'PUC', 'TRAINING', 'WORKSHOP')
+      // 2. BCA Semesters ('1st Sem', '2nd Sem', etc.)
+      // 3. Existing sessions data
+      const sessionClasses = data.map((s) => s.class_name).filter(Boolean) as string[];
+      const standardClasses = [
+        ...DEGREE_TYPES,
+        ...BCA_SEMESTERS.map((s) => s.label),
+        ...BCA_SEMESTERS.map((s) => `BCA ${s.label}`),
+      ];
+      const combinedClasses = Array.from(
+        new Set([...standardClasses, ...sessionClasses])
+      ).filter(Boolean).sort();
+
+      setClasses(combinedClasses);
     }
     setLoading(false);
   };
@@ -59,10 +85,9 @@ export default function ExportPage() {
         if (dateTo && s.session_date > dateTo) return false;
         if (filterSection && s.section !== filterSection) return false;
         if (filterClass && s.class_name !== filterClass) return false;
-        if (filterFaculty && s.faculty_name !== filterFaculty) return false;
         return true;
       }),
-    [sessions, dateFrom, dateTo, filterSection, filterClass, filterFaculty]
+    [sessions, dateFrom, dateTo, filterSection, filterClass]
   );
 
   const toggleSession = (id: string) => {
@@ -181,11 +206,28 @@ export default function ExportPage() {
 
       {/* Filters */}
       <div className="card mt-6">
-        <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
-          <Filter className="h-4 w-4" />
-          Filters
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+            <Filter className="h-4 w-4 text-brand-600" />
+            <span>Filters</span>
+          </div>
+          {(dateFrom || dateTo || filterSection || filterClass) && (
+            <button
+              onClick={() => {
+                setDateFrom('');
+                setDateTo('');
+                setFilterSection('');
+                setFilterClass('');
+              }}
+              className="flex items-center gap-1 text-xs text-brand-700 hover:text-brand-900 font-semibold transition-colors"
+            >
+              <RotateCcw className="h-3 w-3" />
+              <span>Reset Filters</span>
+            </button>
+          )}
         </div>
-        <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+
+        <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div>
             <label className="label">From Date</label>
             <input
@@ -205,41 +247,32 @@ export default function ExportPage() {
             />
           </div>
           <div>
-            <label className="label">Section</label>
+            <label className="label">Section / Year</label>
             <select
               value={filterSection}
               onChange={(e) => setFilterSection(e.target.value)}
-              className="input"
+              className="input font-medium"
             >
               <option value="">All sections</option>
               {sections.map((s) => (
-                <option key={s} value={s}>{s}</option>
+                <option key={s} value={s}>
+                  {['I', 'III', 'V'].includes(s) ? `Semester ${s}` : s}
+                </option>
               ))}
             </select>
           </div>
           <div>
-            <label className="label">Class</label>
+            <label className="label">Class / Degree</label>
             <select
               value={filterClass}
               onChange={(e) => setFilterClass(e.target.value)}
-              className="input"
+              className="input font-medium"
             >
               <option value="">All classes</option>
               {classes.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">Faculty</label>
-            <select
-              value={filterFaculty}
-              onChange={(e) => setFilterFaculty(e.target.value)}
-              className="input"
-            >
-              <option value="">All faculty</option>
-              {faculties.map((f) => (
-                <option key={f} value={f}>{f}</option>
+                <option key={c} value={c}>
+                  {c}
+                </option>
               ))}
             </select>
           </div>
