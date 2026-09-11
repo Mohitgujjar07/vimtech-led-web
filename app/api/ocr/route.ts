@@ -207,9 +207,10 @@ export async function POST(request: NextRequest) {
 
     // Match extracted handwriting rows against the master student roster with optical normalization & auto-correction
     const finalSection = header.section || section || null;
+    const finalClassName = header.class || className || null;
     const matchResults = await matchAllEntriesEnhanced(
       allRows.map((r) => ({ name: r.name || '', ucms_no: r.ucms_no || '' })),
-      { sessionSection: finalSection }
+      { sessionSection: finalSection, sessionClassName: finalClassName }
     );
 
     // Map extracted OCR rows to lab_entries, auto-correcting to verified roster data when confidence is high

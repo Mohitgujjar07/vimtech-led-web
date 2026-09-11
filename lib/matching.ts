@@ -1,8 +1,8 @@
 import { createServerClient } from './supabase';
 import { MatchResult, Student } from './types';
 
-export const MATCH_THRESHOLD = 0.5;
-export const AUTO_CORRECT_THRESHOLD = 0.65;
+export const MATCH_THRESHOLD = 0.75;
+export const AUTO_CORRECT_THRESHOLD = 0.78;
 
 export interface EnhancedMatchResult {
   student_id: string;
@@ -12,9 +12,38 @@ export interface EnhancedMatchResult {
   confidence: number;
   matched: boolean;
   auto_corrected: boolean;
-  match_reason: 'exact_uucms' | 'normalized_uucms' | 'exact_name' | 'token_name' | 'fuzzy' | 'alias';
+  match_reason: 'exact_both' | 'exact_uucms' | 'normalized_uucms' | 'exact_name' | 'token_name' | 'ucms_match_with_name_support' | 'fuzzy' | 'alias';
   original_name: string;
   original_ucms: string;
+}
+
+/**
+ * Checks if the given session is for PUC (Pre-University College).
+ * The user confirmed that only BCA 1st/2nd/3rd year students are enrolled in the roster,
+ * so PUC sessions must NEVER be auto-corrected or matched against the BCA roster.
+ */
+export function isPucSession(className?: string | null, section?: string | null): boolean {
+  const c = (className || '').toLowerCase();
+  const s = (section || '').toLowerCase();
+  return c.includes('puc') || /\bpu\b/.test(c) || s.includes('puc') || /\bpu\b/.test(s);
+}
+
+/**
+ * Standard Levenshtein edit distance.
+ */
+export function levenshtein(s1: string, s2: string): number {
+  const m = s1.length;
+  const n = s2.length;
+  const d: number[][] = [];
+  for (let i = 0; i <= m; i++) d[i] = [i];
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost);
+    }
+  }
+  return d[m][n];
 }
 
 /**
@@ -44,7 +73,126 @@ export function cleanUcmsStrict(val: string): string {
 }
 
 /**
- * Fast trigram similarity computation.
+ * Extracts the 3-4 digit serial number from UUCMS roll numbers (e.g. "U11YB26S0154" -> 154).
+ */
+export function extractUcmsSerial(ucms: string): number | null {
+  if (!ucms) return null;
+  const clean = ucms.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const m = clean.match(/(\d{3,4})$/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+/**
+ * Parses an Indian student name into core words (length >= 3) and initials (length <= 2).
+ */
+export function parseNameTokens(name: string): { coreWords: string[]; initials: string[]; allTokens: string[] } {
+  if (!name) return { coreWords: [], initials: [], allTokens: [] };
+  const clean = name.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
+  const tokens = clean.split(/\s+/).filter(Boolean);
+  const coreWords: string[] = [];
+  const initials: string[] = [];
+  for (const t of tokens) {
+    if (t.length <= 2) initials.push(t);
+    else coreWords.push(t);
+  }
+  return { coreWords, initials, allTokens: tokens };
+}
+
+/**
+ * Strictly compares handwritten OCR student names against enrolled roster names.
+ * Ensures the given core name must match closely, avoiding matching "Harshitha" to "Ganavi B H" or "Vedashree" to "Jamuna".
+ */
+export function compareNameStrict(ocrName: string, rosterName: string): number {
+  if (!ocrName || !rosterName) return 0;
+  const n1 = ocrName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const n2 = rosterName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (n1 === n2) return 1.0;
+
+  const p1 = parseNameTokens(ocrName);
+  const p2 = parseNameTokens(rosterName);
+
+  if (p1.coreWords.length === 0 || p2.coreWords.length === 0) {
+    return n1 === n2 ? 1.0 : 0;
+  }
+
+  // Find best match for each core word in p1 against p2
+  let coreMatches = 0;
+  let totalCoreSim = 0;
+
+  for (const w1 of p1.coreWords) {
+    let bestSim = 0;
+    for (const w2 of p2.coreWords) {
+      if (w1 === w2) {
+        bestSim = 1.0;
+        break;
+      }
+      const dist = levenshtein(w1, w2);
+      const maxL = Math.max(w1.length, w2.length);
+      const maxAllowedDist = maxL >= 5 ? 2 : 1;
+      if (dist <= maxAllowedDist) {
+        const sim = 1.0 - (dist / maxL);
+        if (sim > bestSim) bestSim = sim;
+      }
+    }
+    if (bestSim >= 0.7) {
+      coreMatches++;
+      totalCoreSim += bestSim;
+    }
+  }
+
+  // If NO core words matched, completely different person!
+  if (coreMatches === 0) return 0;
+
+  const avgCoreSim = totalCoreSim / p1.coreWords.length;
+
+  // Compare initials
+  let initialsBonus = 0;
+  if (p1.initials.length > 0 && p2.initials.length > 0) {
+    const init1 = p1.initials.join('');
+    const init2 = p2.initials.join('');
+    if (init1 === init2) {
+      initialsBonus = 0.05;
+    } else if (init1.includes(init2) || init2.includes(init1)) {
+      initialsBonus = 0.02;
+    } else {
+      // Contradicting initials! e.g. OCR wrote BR, roster has KM
+      return Math.max(0, avgCoreSim - 0.25);
+    }
+  }
+
+  return Math.min(1.0, avgCoreSim + initialsBonus);
+}
+
+/**
+ * Strictly compares handwritten UUCMS against roster UUCMS.
+ * NEVER uses full string trigrams (which conflated different students who share the common "U11YB26S" prefix).
+ */
+export function compareUcmsStrict(rawOcrUcms: string, rosterUcms: string): number {
+  if (!rawOcrUcms || !rosterUcms) return 0;
+  const cleanOcr = cleanUcmsStrict(rawOcrUcms);
+  const cleanRoster = cleanUcmsStrict(rosterUcms);
+
+  if (cleanOcr === cleanRoster) return 1.0;
+  if (normalizeUcmsKey(cleanOcr) === normalizeUcmsKey(cleanRoster)) return 0.98;
+
+  const ocrSerial = extractUcmsSerial(cleanOcr);
+  const rosterSerial = extractUcmsSerial(cleanRoster);
+
+  if (ocrSerial !== null && rosterSerial !== null) {
+    if (ocrSerial === rosterSerial) {
+      // Same serial! Check if year/prefix is compatible
+      return 0.95;
+    } else {
+      // Different serial! Distinct roll numbers
+      return 0.0;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Fast trigram similarity computation (kept for backward compatibility).
  */
 export function trigramSimilarity(str1: string, str2: string): number {
   if (!str1 || !str2) return 0;
@@ -75,65 +223,10 @@ export function trigramSimilarity(str1: string, str2: string): number {
 }
 
 /**
- * Token and initials similarity for Indian student names.
- * e.g. "Mohit G" vs "Mohit Gujjar", "Kavya S" vs "Kavya Srinivas", "Prajwal K R" vs "Prajwal Kumar R".
+ * Token and initials similarity (uses strict core name comparison).
  */
 export function tokenNameSimilarity(ocrName: string, rosterName: string): number {
-  if (!ocrName || !rosterName) return 0;
-  const clean1 = ocrName.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
-  const clean2 = rosterName.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
-
-  if (clean1 === clean2) return 1.0;
-
-  const t1 = clean1.split(/\s+/).filter(Boolean);
-  const t2 = clean2.split(/\s+/).filter(Boolean);
-
-  if (t1.length === 0 || t2.length === 0) return 0;
-
-  let matchedTokens = 0;
-  const usedT2 = new Set<number>();
-
-  for (const token1 of t1) {
-    let foundIndex = -1;
-    // 1. Exact token match
-    for (let j = 0; j < t2.length; j++) {
-      if (!usedT2.has(j) && t2[j] === token1) {
-        foundIndex = j;
-        break;
-      }
-    }
-
-    // 2. Initial match (e.g. "g" matches "gujjar" or "gujjar" matches "g")
-    if (foundIndex === -1) {
-      for (let j = 0; j < t2.length; j++) {
-        if (!usedT2.has(j)) {
-          if (
-            (token1.length === 1 && t2[j].startsWith(token1)) ||
-            (t2[j].length === 1 && token1.startsWith(t2[j])) ||
-            (token1.length >= 3 && t2[j].startsWith(token1)) ||
-            (t2[j].length >= 3 && token1.startsWith(t2[j]))
-          ) {
-            foundIndex = j;
-            break;
-          }
-        }
-      }
-    }
-
-    if (foundIndex !== -1) {
-      matchedTokens++;
-      usedT2.add(foundIndex);
-    }
-  }
-
-  const shorterLen = Math.min(t1.length, t2.length);
-  const longerLen = Math.max(t1.length, t2.length);
-
-  if (matchedTokens === shorterLen && shorterLen > 0) {
-    return 0.88 + 0.1 * (shorterLen / longerLen);
-  }
-
-  return matchedTokens / longerLen;
+  return compareNameStrict(ocrName, rosterName);
 }
 
 /**
@@ -142,90 +235,89 @@ export function tokenNameSimilarity(ocrName: string, rosterName: string): number
 export function matchSingleEntry(
   entry: { name: string; ucms_no: string },
   students: Student[],
-  sessionSection?: string | null
+  sessionSection?: string | null,
+  sessionClassName?: string | null
 ): EnhancedMatchResult | null {
   if (!students || students.length === 0) return null;
 
+  // Rule 1: PUC sessions NEVER match against BCA student roster
+  if (isPucSession(sessionClassName, sessionSection)) {
+    return null;
+  }
+
   const rawName = (entry.name || '').trim();
   const rawUcms = (entry.ucms_no || '').trim();
-  const strictUcms = cleanUcmsStrict(rawUcms);
-  const normUcms = normalizeUcmsKey(rawUcms);
+  if (!rawName && !rawUcms) return null;
 
-  let bestMatch: EnhancedMatchResult | null = null;
-  let maxScore = 0;
+  let bestStudent: Student | null = null;
+  let bestScore = 0;
+  let matchReason: EnhancedMatchResult['match_reason'] = 'fuzzy';
 
-  for (const student of students) {
-    const studentStrictUcms = cleanUcmsStrict(student.ucms_no);
-    const studentNormUcms = normalizeUcmsKey(student.ucms_no);
+  for (const s of students) {
+    const nameSim = compareNameStrict(rawName, s.name);
+    const ucmsSim = compareUcmsStrict(rawUcms, s.ucms_no);
 
-    let score = 0;
+    // Section affinity boost
+    let secBoost = 0;
+    if (sessionSection && s.section) {
+      const sSec = sessionSection.toLowerCase();
+      const stSec = s.section.toLowerCase();
+      const secMatch =
+        sSec.includes(stSec) ||
+        stSec.includes(sSec) ||
+        (sSec.startsWith('1') && s.section === 'I') ||
+        (sSec.startsWith('3') && s.section === 'III') ||
+        (sSec.startsWith('5') && s.section === 'V');
+      if (secMatch) secBoost = 0.05;
+    }
+
+    let candidateScore = 0;
     let reason: EnhancedMatchResult['match_reason'] = 'fuzzy';
 
-    // 1. Exact UUCMS Match (Highest priority)
-    if (strictUcms && studentStrictUcms && strictUcms === studentStrictUcms) {
-      score = 1.0;
-      reason = 'exact_uucms';
+    // Case 1: Both name and UUCMS match strongly
+    if (nameSim >= 0.75 && ucmsSim >= 0.95) {
+      candidateScore = 0.5 * nameSim + 0.5 * ucmsSim + secBoost;
+      reason = 'exact_both';
     }
-    // 2. Optical-Normalized UUCMS Match (e.g. 5 <-> S, 0 <-> O, 1 <-> I)
-    else if (normUcms && studentNormUcms && normUcms === studentNormUcms) {
-      score = 0.98;
-      reason = 'normalized_uucms';
-    } else {
-      // 3. Name similarities
-      const exactNameMatch = rawName.toLowerCase() === student.name.toLowerCase();
-      const tokenSim = tokenNameSimilarity(rawName, student.name);
-      const trigramNameSim = trigramSimilarity(rawName, student.name);
-      const bestNameSim = exactNameMatch ? 0.96 : Math.max(tokenSim, trigramNameSim);
-
-      // 4. Partial UUCMS trigram
-      const ucmsTri = strictUcms && studentStrictUcms ? trigramSimilarity(strictUcms, studentStrictUcms) : 0;
-
-      if (exactNameMatch) {
-        score = 0.96;
-        reason = 'exact_name';
-      } else if (tokenSim >= 0.85) {
-        score = tokenSim;
-        reason = 'token_name';
-      } else {
-        score = Math.max(bestNameSim, ucmsTri);
-        reason = 'fuzzy';
-      }
-
-      // 5. Joint confirmation: If both name AND UUCMS partially match, boost confidence
-      if (bestNameSim >= 0.5 && ucmsTri >= 0.5) {
-        score = Math.min(1.0, score + 0.15);
-      }
+    // Case 2: Exact or high name match, UUCMS was slightly off or blank
+    else if (nameSim >= 0.85 && (ucmsSim >= 0.9 || !rawUcms)) {
+      candidateScore = nameSim + secBoost;
+      reason = nameSim === 1.0 ? 'exact_name' : 'token_name';
+    }
+    // Case 3: Exact or high UUCMS match, name has minor OCR typo (>= 0.7)
+    else if (ucmsSim >= 0.95 && nameSim >= 0.7) {
+      candidateScore = 0.4 * nameSim + 0.6 * ucmsSim + secBoost;
+      reason = 'ucms_match_with_name_support';
+    }
+    // Case 4: Contradiction! (e.g. Chethana with Geetha's roll number, or Harshitha with Ganavi's roll number)
+    // NEVER match when nameSim < 0.6!
+    else {
+      candidateScore = 0;
     }
 
-    // 6. Section affinity weighting: if student belongs to session section/year, give small boost
-    if (sessionSection && student.section && score >= 0.4) {
-      const sSec = sessionSection.toLowerCase();
-      const stSec = student.section.toLowerCase();
-      if (sSec === stSec || sSec.includes(stSec) || stSec.includes(sSec)) {
-        score = Math.min(1.0, score + 0.05);
-      }
-    }
-
-    if (score > maxScore) {
-      maxScore = score;
-      if (score >= MATCH_THRESHOLD) {
-        bestMatch = {
-          student_id: student.id,
-          student_name: student.name,
-          student_ucms: student.ucms_no,
-          student_section: student.section,
-          confidence: Math.round(score * 100) / 100,
-          matched: true,
-          auto_corrected: score >= AUTO_CORRECT_THRESHOLD,
-          match_reason: reason,
-          original_name: rawName,
-          original_ucms: rawUcms,
-        };
-      }
+    if (candidateScore > bestScore && candidateScore >= MATCH_THRESHOLD) {
+      bestScore = candidateScore;
+      bestStudent = s;
+      matchReason = reason;
     }
   }
 
-  return bestMatch;
+  if (!bestStudent || bestScore < MATCH_THRESHOLD) {
+    return null;
+  }
+
+  return {
+    student_id: bestStudent.id,
+    student_name: bestStudent.name,
+    student_ucms: bestStudent.ucms_no,
+    student_section: bestStudent.section,
+    confidence: Math.round(bestScore * 100) / 100,
+    matched: true,
+    auto_corrected: bestScore >= AUTO_CORRECT_THRESHOLD,
+    match_reason: matchReason,
+    original_name: rawName,
+    original_ucms: rawUcms,
+  };
 }
 
 /**
@@ -236,8 +328,14 @@ export async function matchAllEntriesEnhanced(
   options?: {
     preloadedStudents?: Student[];
     sessionSection?: string | null;
+    sessionClassName?: string | null;
   }
 ): Promise<(EnhancedMatchResult | null)[]> {
+  // If PUC session, skip matching entirely
+  if (isPucSession(options?.sessionClassName, options?.sessionSection)) {
+    return entries.map(() => null);
+  }
+
   let students = options?.preloadedStudents;
 
   if (!students) {
@@ -257,7 +355,7 @@ export async function matchAllEntriesEnhanced(
   }
 
   return entries.map((entry) =>
-    matchSingleEntry(entry, students, options?.sessionSection)
+    matchSingleEntry(entry, students!, options?.sessionSection, options?.sessionClassName)
   );
 }
 
